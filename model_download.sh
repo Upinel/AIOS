@@ -75,6 +75,10 @@ size_hint() {
 
   case "$1" in
     *q4_0-heretic*) echo "15 GB" ;;
+    # Bonsai 2: two packings about 1.3 GB apart, and both repo names contain
+    # "Bonsai-2-27B", so the smaller one has to be matched first.
+    *Bonsai-2-27B-1bit*) echo "6 GB" ;;
+    *Bonsai-2-27B*) echo "8 GB" ;;
     *Qwen3.8-27B*)  echo "19 GB" ;;
     *Qwen3.8-9B*)   echo "6 GB"  ;;
     *Qwen3.6-35B*)  echo "22 GB" ;;

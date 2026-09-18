@@ -227,10 +227,15 @@ is installed, and which aliases need it.
 | M5 Pro decode / prefill | 28.1 t/s / 387 t/s | — |
 
 **Those are Prism's numbers, not this project's.** They were measured with
-`llama-bench` at depth 0 on an M5 Pro, and Bonsai 2 has not been re-measured on
-the reference machine yet — so treat them as the vendor figure they are. For
-scale: `mlx-q-35ba3b` does 141 t/s and `gguf-g-26ba4b` 106 t/s here. Bonsai 2 is
-not a speed model. At 6 GB it is a *capability per gigabyte* model, and the
+`llama-bench` at depth 0 on an M5 Pro. A first smoke test here — greedy, a
+63-token prompt, 41 tokens generated, thinking on — measured **25.5 t/s** on the
+reference machine, within 10% of their figure, which is why it is quoted as
+usable rather than aspirational. That is a smoke test and not a benchmark: the
+README's other numbers are 8k-context agent turns, best of several runs, and
+Bonsai 2 has not had that treatment yet.
+
+For scale: `mlx-q-35ba3b` does 141 t/s and `gguf-g-26ba4b` 106 t/s here. Bonsai 2
+is not a speed model. At 6 GB it is a *capability per gigabyte* model, and the
 honest comparison is the 9.4 GB conventional "2-bit" Qwen3.8-27B build, which
 Prism measure twelve benchmark points lower at two-thirds again the size.
 
@@ -271,6 +276,16 @@ model, but the **uncensored** community packs this project points at do not
 include it, and pairing Prism's aligned projector with abliterated language
 weights is untested. So `ENABLE_VISION` is not wired up for these aliases: text
 and tool calling are what they serve today.
+
+### What is not wired up yet
+
+The tool-template rewrite (`TOOL_TEMPLATE=1`), which names a schema's required
+fields so a harness stops reporting `missing required property`, is anchored on
+Gemma's chat template. A Bonsai model therefore does not get it: `./start.sh`
+prints `tool template unavailable, using the model's stock template` and serves
+the model's own template instead. Nothing breaks, but the reliability work in
+[the README](../README.md#agents-that-write-files) does not apply here yet, so
+name the required fields in the agent's system prompt.
 
 ## Why this matters less than it sounds
 

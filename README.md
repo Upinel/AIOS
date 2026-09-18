@@ -358,10 +358,11 @@ and a new model cannot be added without declaring one:
 | `gguf-b-27b-ptq1` | GGUF | the same model at PTQ1_0 (5.95 GB) — needs the PrismML runtime | — | — |
 
 `†` **Prism's figures, not ours** — measured by PrismML on an M5 Pro with
-`llama-bench` at depth 0, and quoted here because this project has not
-re-measured Bonsai 2 yet. They are not comparable to the rows above them: those
-are 8k-context agent turns with tuned defaults, this is a short-context
-throughput number. See [Bonsai 2 27B](#bonsai-2-27b-a-27b-in-6-gb).
+`llama-bench` at depth 0. A smoke test here measured 25.5 t/s, consistent with
+theirs; a proper 8k-context re-measure is still pending. They are not comparable
+to the rows above them either way: those are 8k-context agent turns with tuned
+defaults, this is a short-context throughput number. See
+[Bonsai 2 27B](#bonsai-2-27b-a-27b-in-6-gb).
 
 Measured on an M5 Pro. **Every figure is at 8k context**, which is what an agent
 actually pays, with the tuned defaults — except `mlx-q-27b-4bit`, which is

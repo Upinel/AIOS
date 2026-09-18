@@ -100,6 +100,22 @@ REPOS = {
         ("model.gguf", gb(4.0)),
         ("mmproj.gguf", gb(0.5)),
     ),
+    # PrismML's ternary packings. PQ2_0 is NOT Q2_0: the first is Prism's own
+    # packed type, the second is the official ggml type at a different group
+    # size - and stock llama.cpp loads the official one without a warning and
+    # emits gibberish. A selector that cannot tell them apart can hand you the
+    # broken file, so the plain Q2_0 is listed FIRST here: picking the packed
+    # type has to be a decision, not an accident of file order.
+    "bonsai": repo(
+        ("Bonsai-2-27B-Q2_0.gguf", gb(6.66)),
+        ("Bonsai-2-27B-PQ2_0.gguf", gb(7.21)),
+        ("Bonsai-2-27B-PTQ1_0.gguf", gb(5.95)),
+        ("Bonsai-2-27B-mmproj-Q8_0.gguf", gb(0.63)),
+        ("README.md", 100),
+    ),
+    # The shape the two shipped aliases actually point at: one packing per repo.
+    "bonsai_pq": repo(("Bonsai-2-27B-PQ2_0-CRACK.gguf", gb(7.21))),
+    "bonsai_ptq": repo(("Bonsai-2-27B-PTQ1_0-CRACK.gguf", gb(5.95))),
 }
 
 FAILED = 0
@@ -186,6 +202,26 @@ def main():
     # Untagged single-quant repo should still work.
     tag, files, _ = select(REPOS["untagged"], "Q4_K_M")
     check("untagged repo still fetches its single weight", len(files), 2)
+
+    # ── PrismML ternary packings ─────────────────────────────────────────────
+    # Both shipped Bonsai aliases point at a repo holding one packing each.
+    tag, files, _ = select(REPOS["bonsai_pq"], "Q4_0")
+    check("a PQ2_0-only repo resolves to PQ2_0, not Q2_0", tag, "PQ2_0")
+    check("and fetches the packed weight",
+          files, ["Bonsai-2-27B-PQ2_0-CRACK.gguf"])
+    tag, files, _ = select(REPOS["bonsai_ptq"], "Q4_0")
+    check("a PTQ1_0-only repo resolves to PTQ1_0", tag, "PTQ1_0")
+    check("and fetches the packed weight",
+          files, ["Bonsai-2-27B-PTQ1_0-CRACK.gguf"])
+
+    # The near-miss, with both published: the packed type has to win even
+    # though the plain Q2_0 is listed first and is the same bit width.
+    tag, files, _ = select(REPOS["bonsai"], "Q4_0")
+    check("PQ2_0 wins over the same-width plain Q2_0", tag, "PQ2_0")
+    check("and the plain Q2_0 file is not fetched at all",
+          any("Bonsai-2-27B-Q2_0" in f for f in files), False)
+    check("the projector still comes along",
+          any("mmproj" in f for f in files), True)
 
     # ── note severity ────────────────────────────────────────────────────────
     # A substitution that keeps the bit width is what the request meant, so it

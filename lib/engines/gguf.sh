@@ -22,8 +22,18 @@
 # this and only calls the engine_* functions below.
 
 # ── presence ─────────────────────────────────────────────────────────────────
+# Stock llama.cpp on PATH is the normal case. A runtime a model brings with it
+# counts too: ./lib/fetch-runtime.sh installs a complete llama.cpp, so a machine
+# serving only Bonsai 2 has everything it needs without Homebrew's copy - and
+# telling it "llama.cpp is not installed" right after it installed one would be
+# wrong.
 engine_present() {
-  command -v llama-server >/dev/null 2>&1
+  command -v llama-server >/dev/null 2>&1 && return 0
+  local key bin
+  key="$(runtime_key_for_model "${MODEL_REPO:-}")"
+  [[ -n "$key" ]] || return 1
+  bin="$(runtime_server_for "$key")"
+  [[ -n "$bin" && -x "$bin" ]]
 }
 
 engine_name() { echo "llama.cpp"; }
@@ -107,12 +117,19 @@ engine_status_extras() {
 # autoregressive only" because it has no GGUF mmproj - a warning about a file
 # the engine does not use, on a model whose MTP was working fine.
 engine_post_fetch_notes() {
-  local dir="$1"
+  local dir="$1" rtkey
+  rtkey="$(runtime_key_for_model "$(model_repo_from_dir "$dir")")"
   if [[ -n "$(model_mmproj_gguf "$dir" || true)" ]]; then
     ok "Vision projector present."
   fi
   if [[ -n "$(model_draft_gguf "$dir" || true)" ]]; then
     ok "Speculative draft present - expect a real speedup."
+  elif [[ "$rtkey" == "prism" ]]; then
+    # Not a shortcoming here. Prism measure speculation on Apple Silicon as a
+    # net slowdown except on ternary code and maths, so no draft head is
+    # fetched on purpose - and warning about a file that is deliberately
+    # absent would send people looking for a fix that does not exist.
+    info "No draft head by design: speculation is a net slowdown on Metal here."
   else
     warn "No draft file: this model runs autoregressive only."
   fi

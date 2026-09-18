@@ -146,7 +146,14 @@ d = json.load(open(sys.argv[1]))
 # Quant families, for when the requested tag is not published verbatim.
 # Q4_K_M, Q4_K_S and Q4_K_P are the same bit width with different sub-variants,
 # so any of them satisfies a request for "a Q4_K".
-TAG = re.compile(r"(?i)(IQ\d+_[A-Z0-9_]+|Q\d+_K_[A-Z]+|Q\d+_K|Q\d+_\d|BF16|F16|F32)")
+#
+# PrismML's packed ternary types come first and match BEFORE the plain Q
+# patterns. Without them "PQ2_0" matches the "Q2_0" inside it, and the two are
+# not the same thing at all: Q2_0 is an official ggml type at a different group
+# size, and it is the file stock llama.cpp loads without complaint and turns
+# into gibberish. Misreporting one as the other is exactly the confusion that
+# makes that failure hard to see.
+TAG = re.compile(r"(?i)(PTQ\d+_\d+|PQ\d+_\d+|IQ\d+_[A-Z0-9_]+|Q\d+_K_[A-Z]+|Q\d+_K|Q\d+_\d|BF16|F16|F32)")
 
 
 def quant_of(name):
@@ -170,8 +177,8 @@ def quant_family(tag):
 
 
 def bits_of(family):
-    """4 from Q4_K, 4 from Q4_0, 3 from IQ3, 0 when there is no number."""
-    m = re.match(r"^I?Q(\d+)", family or "")
+    """4 from Q4_K, 4 from Q4_0, 3 from IQ3, 2 from PQ2_0, 0 when there is no number."""
+    m = re.match(r"^I?P?T?Q(\d+)", family or "")
     return int(m.group(1)) if m else 0
 
 
@@ -235,8 +242,16 @@ if families:
         def dist(fam):
             b = bits_of(fam)
             if b == 0:
-                return (99, 99)
-            return (abs(b - want_bits), 0 if b <= want_bits else 1)
+                # No number in the tag: last resort, but still ordered, so the
+                # choice does not depend on the order the API happened to list
+                # files in.
+                return (99, 99, 0, fam)
+            # The two tuple entries above this line are the substantive ones.
+            # Below them a tie is broken by the more specific tag name and then
+            # alphabetically, so a repo publishing both Prism's packed PQ2_0 and
+            # the plain Q2_0 always resolves to the packed one instead of
+            # depending on file order.
+            return (abs(b - want_bits), 0 if b <= want_bits else 1, -len(fam), fam)
 
         chosen = min(families, key=dist)
 
