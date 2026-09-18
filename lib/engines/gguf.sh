@@ -129,7 +129,7 @@ engine_resolved_profile() { :; }
 # caller echoes it for --print and passes it to the binary.
 engine_build_args() {
   local dir="$1"
-  local main mmproj draft depth budget
+  local main mmproj draft depth budget rtkey rtbin
 
   main="$(model_main_gguf "$dir" || true)"
   [[ -n "$main" ]] || die "No GGUF weights found in $dir"
@@ -152,11 +152,30 @@ engine_build_args() {
   fi
   if (( depth > 0 )) && [[ -z "$draft" ]]; then depth=0; fi
 
+  # Some models cannot run on stock llama.cpp at all, and unlike the draft case
+  # below there is no fallback to fall back to: the file is written in ggml
+  # types a stock build does not define. Serving it would fail at load - and the
+  # nearest-looking substitute is worse than a failure, because stock llama.cpp
+  # loads it and emits gibberish. So a model-declared runtime is a hard
+  # requirement: resolve it or stop with something the user can act on.
+  LLAMA_BIN="llama-server"
+  rtkey="$(runtime_key_for_model "${MODEL_REPO:-}")"
+  if [[ -n "$rtkey" ]]; then
+    rtbin="$(runtime_server_for "$rtkey")"
+    if [[ -n "$rtbin" && -x "$rtbin" ]]; then
+      LLAMA_BIN="$rtbin"
+    else
+      die "$MODEL_REPO needs the $(runtime_label_for "$rtkey").
+    Stock llama.cpp cannot load this file - it does not define its weight types.
+    Install the runtime once, then start again:
+        $(runtime_fetch_hint "$rtkey")"
+    fi
+  fi
+
   # A draft built against a patched llama.cpp will not load on a stock one, and
   # llama-server treats that as fatal. Detect it rather than letting "a bit more
   # speed" become "will not start".
-  LLAMA_BIN="llama-server"
-  if (( depth > 0 )) && [[ -n "$draft" ]] && draft_needs_patched_runtime "$draft"; then
+  if [[ -z "$rtkey" ]] && (( depth > 0 )) && [[ -n "$draft" ]] && draft_needs_patched_runtime "$draft"; then
     if [[ -n "${LLAMA_SERVER:-}" && -x "${LLAMA_SERVER:-}" ]]; then
       LLAMA_BIN="$LLAMA_SERVER"
     elif (( ${DRAFT_PATCHED_RUNTIME:-0} )); then
@@ -232,6 +251,11 @@ engine_export_env() { :; }
 # Lines for the startup banner. Engine-specific facts the shared front end
 # cannot know.
 engine_banner() {
+  local rtkey
+  rtkey="$(runtime_key_for_model "${MODEL_REPO:-}")"
+  if [[ -n "$rtkey" ]]; then
+    log "  runtime      $(runtime_label_for "$rtkey")"
+  fi
   if (( ${ENGINE_DEPTH:-0} > 0 )); then
     log "  speculative  depth $ENGINE_DEPTH   ($(basename "$ENGINE_DRAFT"))"
   else
@@ -271,6 +295,26 @@ engine_apply_settings() {
     off) export GGML_METAL_TENSOR_DISABLE=1 ;;
     *)   die "METAL_TENSOR_API=\"$METAL_TENSOR_API\" is not one of auto | on | off" ;;
   esac
+
+  # The Prism fork compiles its Metal library from source to reach the tensor
+  # API, and on some M5 macOS builds that compile fails:
+  #
+  #   ggml_metal_library_init_from_source: error compiling source
+  #   ggml_metal_device_init: - the tensor API is not supported ... disabling
+  #
+  # Observed here on an M5 Pro running macOS 27.0; Prism document the same
+  # failure on macOS 26.2-26.4. ggml recovers on its own, but the failed compile
+  # is alarming in a log and costs a few seconds of startup. METAL_TENSOR_API=off
+  # skips the attempt rather than failing it, and does not cost anything that
+  # was not already lost - so say so where it actually applies, which is a chip
+  # that has Neural Accelerators and a model that needs this runtime.
+  if [[ -n "$(runtime_key_for_model "${MODEL_REPO:-}")" ]] \
+     && chip_has_neural_accelerator \
+     && [[ "${METAL_TENSOR_API:-auto}" != "off" ]]; then
+    warn "Running the Prism runtime with the tensor API enabled."
+    warn "If the log shows 'ggml_metal_library_init_from_source: error compiling source',"
+    warn "set METAL_TENSOR_API=off - it keeps full Metal speed and only skips the probe."
+  fi
 }
 
 engine_binary() { echo "${LLAMA_BIN:-llama-server}"; }

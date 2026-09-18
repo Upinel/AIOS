@@ -72,6 +72,12 @@ MODELS = [
      ["HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive"], 28),
     ("Gemma-4-E2B",
      ["HauhauCS/Gemma-4-E2B-Uncensored-HauhauCS-Aggressive"], 14),
+    # Bonsai 2 is Qwen3.8-27B's architecture in ternary weights, so it shares
+    # that cache. Only the GGUF engine serves it - both packings are listed so
+    # the table is checked for each alias, not just the default one.
+    ("Bonsai-2-27B",
+     ["dealignai/Bonsai-2-27B-Ternary-CRACK-GGUF",
+      "dealignai/Bonsai-2-27B-1bit-CRACK-GGUF"], 64),
 ]
 
 PASSED = 0

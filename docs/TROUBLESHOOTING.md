@@ -237,6 +237,14 @@ tail -n 40 run/server.log
 | `No model weights found` | Not downloaded. Run `./install.sh` or `./model_download.sh`. |
 | `Insufficient Memory` | Lower `CONTEXT_WINDOW`, set `KV_QUANT="q4_0"`, or lower `BATCH_SIZE`. |
 | `Plan needs ~X GB but this Mac has Y` | The memory check refused before loading. Lower the context. |
+| `needs the PrismML llama.cpp fork` | A `gguf-b-*` model, without its runtime. `./lib/fetch-runtime.sh prism` installs it once. |
+| `error compiling source`, `tensor API is not supported` | The M5 Metal probe failing. Harmless — ggml disables the tensor API and carries on. Set `METAL_TENSOR_API="off"` to skip the attempt entirely. |
+
+A Bonsai 2 model that **starts and answers nonsense** is the other half of the
+same problem, and the half worth knowing about: that is what stock llama.cpp does
+with a `Q2_0` ternary file, because it applies no Hadamard transform and says
+nothing about it. Use the `gguf-b-*` aliases, which are the packed files, and the
+Prism runtime — [GGUF-RUNTIME.md](GGUF-RUNTIME.md#bonsai-2-27b-needs-the-prismml-fork).
 
 ## Output loops, or the model will not stop
 

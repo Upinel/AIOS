@@ -77,6 +77,13 @@ show_usage() {
 #   e4b          middle size - measured slower than both the 26B MoE and E2B
 #   e2b          smallest and FITS an 8 GB Mac
 #   qwen-27b / qwen-9b / qwen-35b   Qwen through llama.cpp - see the MLX note
+#   b-27b / b-27b-ptq1   Bonsai 2 27B - PrismML's ternary (1.58-bit) Qwen3.8-27B
+#                        in ~6-7 GB. These are NOT ordinary GGUFs: PQ2_0 and
+#                        PTQ1_0 are Prism's own ggml types, and stock llama.cpp
+#                        refuses them outright (it loads the similarly-named
+#                        Q2_0 and produces garbage), so both aliases need the
+#                        PrismML fork. See model_runtime_for() and
+#                        ./lib/fetch-runtime.sh.
 #
 # Why 26b-q4 is the default: llama.cpp's Metal kernels run Q4_0 markedly
 # faster than K-quants, and Google's QAT release makes Q4_0 quality-safe
@@ -112,6 +119,7 @@ show_usage() {
 MODEL_ALIASES="\
 gguf-g-26ba4b gguf-g-12b gguf-g-31b gguf-g-e4b gguf-g-e2b \
 gguf-q-27b gguf-q-9b gguf-q-35ba3b \
+gguf-b-27b gguf-b-27b-ptq1 \
 mlx-q-35ba3b mlx-q-27b-4bit mlx-q-27b-6bit mlx-q-27b-3bit mlx-q-27b-4bit-bz mlx-q-9b"
 
 # Aliases from before the rename. Still accepted - an existing env.conf or a
@@ -233,9 +241,76 @@ model_repo_for() {
     # 35B-A3B build - same MoE shape, nearest thing that exists. Named for what
     # it is rather than mislabelled as 3.8.
     gguf-q-35ba3b)    echo "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive" ;;
+    # ── Bonsai 2 (PrismML ternary) ───────────────────────────────────────────
+    # Prism's own packs are aligned - they are derived from base Qwen3.8-27B -
+    # and this project only serves uncensored models, so both aliases point at
+    # the community abliteration instead. The ternary packing and the
+    # architecture are unchanged, so the Prism runtime and the KV arithmetic
+    # below still apply to the weights exactly as published.
+    #
+    # PTQ1_0 packs the trits densely (5.95 GB, 1.75 bits/weight) and is the pick
+    # when memory is tightest. PQ2_0 stores each trit in a 2-bit slot (7.21 GB,
+    # 2.13 bits/weight): it is the packing Prism measured on Apple Silicon and
+    # the one this project defaults to.
+    gguf-b-27b)       echo "dealignai/Bonsai-2-27B-Ternary-CRACK-GGUF" ;;
+    gguf-b-27b-ptq1)  echo "dealignai/Bonsai-2-27B-1bit-CRACK-GGUF" ;;
     */*)         echo "$1" ;;
     *)           die "MODEL=\"$1\" is neither a known alias nor an owner/name repo id.
     Known aliases: $MODEL_ALIASES" ;;
+  esac
+}
+
+# ── non-stock llama.cpp runtimes ─────────────────────────────────────────────
+# Two things in this registry need a llama.cpp that Homebrew does not ship:
+#
+#   prism   Bonsai 2 27B. PQ2_0 and PTQ1_0 are Prism's own ggml types, and the
+#           model needs a Hadamard activation transform that is not upstream yet
+#           (ggml-org/llama.cpp#27779). A stock build refuses those two types
+#           outright, and for the similarly-named Q2_0 it loads the file without
+#           a warning and emits gibberish - which is worse, because it looks
+#           like it worked. The kernels live in PrismML-Eng/llama.cpp.
+#
+# The FastMTP draft patch is the other one, but that is a property of a DRAFT
+# head rather than of the model, so it keeps its own knobs (LLAMA_SERVER and
+# DRAFT_PATCHED_RUNTIME) and is resolved in lib/engines/gguf.sh.
+#
+# One key maps to one env.conf path, so a third runtime is a case arm here plus
+# a branch in ./lib/fetch-runtime.sh rather than a new global.
+runtime_key_for_model() {
+  case "$1" in
+    *Bonsai-2-27B*) echo prism ;;
+  esac
+}
+
+runtime_env_key_for() {
+  case "$1" in
+    prism) echo PRISM_RUNTIME ;;
+  esac
+}
+
+runtime_label_for() {
+  case "$1" in
+    prism) echo "PrismML llama.cpp fork (ternary kernels)" ;;
+  esac
+}
+
+# The configured binary for a runtime key, or empty when it is not set up.
+runtime_server_for() {
+  local key="$1" var
+  var="$(runtime_env_key_for "$key")"
+  [[ -n "$var" ]] && printf '%s\n' "${!var:-}"
+  return 0
+}
+
+# Where ./lib/fetch-runtime.sh installs a runtime it downloads.
+runtime_default_dir() {
+  echo "$RUN_DIR/runtimes/$1"
+}
+
+runtime_fetch_hint() {
+  case "$1" in
+    prism) echo "./lib/fetch-runtime.sh prism" ;;
+    *)     echo "./lib/fetch-runtime.sh" ;;
   esac
 }
 
@@ -272,7 +347,7 @@ QUOTED = {"MODEL", "KV_QUANT", "PROFILE", "THINKING", "MODEL_QUANT",
           "SSD_SESSION_CACHE", "METAL_TENSOR_API", "SERVED_MODEL_NAME",
           "HOST", "API_KEY_FILE", "LLAMA_SERVER", "TOOL_TEMPLATE",
           "MODELS_DIR", "LOG_FILE", "DRAFT_PATCHED_RUNTIME",
-          "MTP_DEPTH", "PREFILL_CHUNK_TOKENS"}
+          "MTP_DEPTH", "PREFILL_CHUNK_TOKENS", "PRISM_RUNTIME"}
 src = open(path, encoding="utf-8").read()
 val = f'"{value}"' if key in QUOTED and not value.startswith('"') else value
 new, n = re.subn(rf'^{re.escape(key)}=.*$', f'{key}={val}', src, count=1, flags=re.M)
@@ -1638,6 +1713,12 @@ kv_kb_per_token_f16_gguf() {
     *Qwen3.8-27B*)            echo 64 ;;   # 65 blocks, 16 full, 4 x 16 x 4 x 256
     *Qwen3.8-9B*)             echo 32 ;;   # 32 blocks,  8 full, 4 x  8 x 4 x 256
     *Qwen3.6-35B*)            echo 20 ;;   # 40 blocks, 10 full, 4 x 10 x 2 x 256
+    # Bonsai 2 27B is Qwen3.8-27B's architecture with ternary weights, so its
+    # cache is the Qwen3.8-27B cache: 65 blocks, 16 full-attention layers,
+    # 4 KV heads x 256. Prism's own figure for it is 64 KiB/token (~6.3 GiB at
+    # 100K), which is what this predicts - the packing changes the weights, not
+    # the attention.
+    *Bonsai-2-27B*)           echo 64 ;;
     *)                        echo 64 ;;
   esac
 }

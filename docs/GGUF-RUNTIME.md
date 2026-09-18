@@ -10,14 +10,24 @@
   "Make it work, make it right, make it fast - then measure it, because
    the third one is only a claim until the numbers agree."
 -->
-# The GGUF runtime, and the FastMTP patch
+# The GGUF runtime, and the two patched builds
 
 UpinelAIOS runs everything through **llama.cpp**. That is a deliberate
 constraint rather than a limitation we have not got around to: llama.cpp is the
 only runtime that can serve an uncensored Gemma 4 at all, and it serves every
 other GGUF equally well, which is why the Qwen family lives here too.
 
-One thing needs saying plainly, because it costs a factor of three on the 27B.
+Homebrew's llama.cpp is the default, and the right answer for almost everything.
+Two models need a build it does not ship, for entirely different reasons, and
+they are kept apart on purpose — a runtime only one model needs should not
+become everybody's runtime:
+
+| model | needs | why | install |
+|---|---|---|---|
+| `gguf-q-27b` | the FastMTP patch | its draft head trims the drafter's vocabulary and adds a `d2t` remap tensor | `./lib/build-fastmtp.sh` |
+| `gguf-b-27b`, `gguf-b-27b-ptq1` | the PrismML fork | ternary weight types and a Hadamard activation transform, neither of them upstream | `./lib/fetch-runtime.sh prism` |
+
+One of the two needs saying plainly, because it costs a factor of three on the 27B.
 
 ## The Qwen 27B MTP head needs a patched llama.cpp
 
@@ -150,6 +160,117 @@ DRAFT_PATCHED_RUNTIME=1                                   # in env.conf
 `DRAFT_PATCHED_RUNTIME=1` only says "this head is loadable" — it does not build
 anything. With it set on a stock runtime, the server will exit, exactly as it
 does today when the head is attached by hand.
+
+## Bonsai 2 27B needs the PrismML fork
+
+Bonsai 2 27B is PrismML's ternary pack of Qwen3.8-27B: the same architecture,
+with the weights rotated blockwise by a Hadamard transform and then quantised to
+{−1, 0, +1} with one FP16 scale per group of 128. It lands at 1.72–2.13 bits per
+weight — a 27B in 6–7 GB — and it needs two things stock llama.cpp does not have:
+
+| what | why stock llama.cpp fails |
+|---|---|
+| the `PQ2_0` / `PTQ1_0` weight types | Prism's own ggml types; a stock build rejects the file as an unknown type |
+| the Hadamard activation transform | folded into the stored weights offline, so the runtime has to apply the matching transform to activations; not upstream yet (ggml-org/llama.cpp#27779) |
+
+**The failure mode has a quiet half, and that is why this is written down at
+all.** Stock llama.cpp refuses `PQ2_0` and `PTQ1_0` loudly. It also *loads* the
+similarly-named `Q2_0` — an official ggml type at a different group size, kept in
+a separate repo — **without any warning, and produces gibberish.** Nothing in the
+log says so, which is worse than a crash: it looks like it worked. So the aliases
+point only at the packed files, and unlike the Gemma draft-head case there is no
+"substitute a nearby quant" fallback to reach for.
+
+### Installing it
+
+```bash
+./lib/fetch-runtime.sh prism      # prebuilt macOS arm64, checksum verified
+./start.sh --model gguf-b-27b
+```
+
+The script pins one PrismML release tag and verifies the archive against its
+published sha256 before extracting. Pinned rather than tracking "latest", for a
+concrete reason: the release published *after* the pinned one (`prism-b10687`)
+lists macOS archives in its release notes but does not attach them, and every
+macOS link on that tag 404s. A pinned archive that exists beats a latest that
+does not. If the pinned asset ever disappears, the script prints the
+build-from-source commands instead of failing with a bare curl error.
+
+It also checks the runtime can actually do the job before wiring it up: it runs
+`llama-server --version`, then confirms `libggml-metal` really contains `PQ2_0`.
+The ternary kernels are the entire reason for the runtime, and their absence
+would otherwise not surface until a model failed to load.
+
+### It does not replace the Homebrew build
+
+`lib/engines/gguf.sh` resolves the runtime **per model**, through
+`runtime_key_for_model()` in `lib/common.sh`:
+
+- a model that declares a runtime must have it, or `./start.sh` stops and names
+  the install command — there is no autoregressive fallback here, because there
+  is nothing to fall back to
+- everything else keeps Homebrew's llama.cpp, which is the build the Gemma and
+  Qwen figures in the README were measured on
+- the FastMTP draft patch keeps its own knobs (`LLAMA_SERVER`,
+  `DRAFT_PATCHED_RUNTIME`), because it is a property of a *draft head* rather
+  than of a model
+
+Running `./lib/fetch-runtime.sh` with no arguments lists what is available, what
+is installed, and which aliases need it.
+
+### Measured
+
+| | PQ2_0 | PTQ1_0 |
+|---|---:|---:|
+| size | 7.21 GB | 5.95 GB |
+| bits/weight | 2.13 | 1.75 |
+| M5 Pro decode / prefill | 28.1 t/s / 387 t/s | — |
+
+**Those are Prism's numbers, not this project's.** They were measured with
+`llama-bench` at depth 0 on an M5 Pro, and Bonsai 2 has not been re-measured on
+the reference machine yet — so treat them as the vendor figure they are. For
+scale: `mlx-q-35ba3b` does 141 t/s and `gguf-g-26ba4b` 106 t/s here. Bonsai 2 is
+not a speed model. At 6 GB it is a *capability per gigabyte* model, and the
+honest comparison is the 9.4 GB conventional "2-bit" Qwen3.8-27B build, which
+Prism measure twelve benchmark points lower at two-thirds again the size.
+
+### On Apple Silicon, two knobs
+
+**Speculation: leave it off.** Prism ship a `dspark` drafter (~0.6 GB) that is
+worth 1.8–2.4x on CUDA. Their own documentation says that on Apple Silicon it
+pays off only for ternary code and maths (~1.2x) and is a net slowdown
+otherwise, so no draft head is fetched here.
+
+**The Metal tensor API probe can fail on M5.** The Prism fork compiles its Metal
+library from source to reach the tensor API, and on some M5 macOS builds that
+compile fails:
+
+```
+ggml_metal_library_init_from_source: error compiling source
+ggml_metal_device_init: - the tensor API is not supported in this environment - disabling
+```
+
+Observed here on an **M5 Pro running macOS 27.0**, which is outside the
+26.2–26.4 window Prism document — so their range is not the whole story. ggml
+recovers by itself and Metal keeps working; the cost is an alarming log line and
+a few seconds of startup. To skip the attempt rather than fail it:
+
+```conf
+METAL_TENSOR_API="off"
+```
+
+That is a setting this project already exposes, and it costs nothing that was not
+already lost — on a build where the probe fails, the tensor API is disabled
+either way. `./start.sh` says so at startup when it sees a Prism-runtime model on
+a chip that has Neural Accelerators.
+
+### Vision
+
+Prism ship a 0.63 GB Q8_0 vision projector and Bonsai 2 is a vision-language
+model, but the **uncensored** community packs this project points at do not
+include it, and pairing Prism's aligned projector with abliterated language
+weights is untested. So `ENABLE_VISION` is not wired up for these aliases: text
+and tool calling are what they serve today.
 
 ## Why this matters less than it sounds
 

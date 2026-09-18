@@ -85,7 +85,7 @@ to pick a different model, [Benchmarks](#benchmarks) for the measured numbers.
 > you to choose a runtime up front.
 
 A portable, one-command **uncensored agent endpoint** for Apple Silicon Macs,
-tuned for maximum tokens/sec. Two model families ship in the box, across two
+tuned for maximum tokens/sec. Three model families ship in the box, across two
 runtimes:
 
 | family | models | runtime |
@@ -93,6 +93,7 @@ runtimes:
 | **Gemma 4** | `gguf-g-26ba4b` (default), `gguf-g-12b`, `gguf-g-31b`, `gguf-g-e2b`, `gguf-g-e4b` | llama.cpp |
 | **Qwen 3.8** | `gguf-q-27b`, `gguf-q-9b`, `gguf-q-35ba3b` | llama.cpp |
 | **Qwen 3.8 / 3.6** | `mlx-q-35ba3b`, `mlx-q-27b-4bit`, `mlx-q-27b-6bit`, `mlx-q-9b` | MLX / MTPLX |
+| **Bonsai 2** | `gguf-b-27b`, `gguf-b-27b-ptq1` | llama.cpp — **PrismML fork required** |
 
 Built and measured on an **M5 Pro / 20-core GPU / 64 GB**, across both engines:
 `hawhyhb/Qwen3.6-35B-A3B-...-MTPLX-4bit` on MLX, and
@@ -353,6 +354,14 @@ and a new model cannot be added without declaring one:
 | `mlx-q-27b-4bit` | MLX | Qwen 3.8 27B dense — the quality pick | ~30 t/s `*` | ~330 t/s |
 | `mlx-q-9b` | MLX | Qwen 3.8 9B — only when memory is tight | ~113 t/s | ~1,340 t/s |
 | `gguf-q-27b` / `gguf-q-9b` / `gguf-q-35ba3b` | GGUF | the same Qwen models through llama.cpp | — | — |
+| `gguf-b-27b` | GGUF | Bonsai 2 27B ternary, PQ2_0 (7.2 GB) — needs the PrismML runtime | 28.1 t/s `†` | 387 t/s `†` |
+| `gguf-b-27b-ptq1` | GGUF | the same model at PTQ1_0 (5.95 GB) — needs the PrismML runtime | — | — |
+
+`†` **Prism's figures, not ours** — measured by PrismML on an M5 Pro with
+`llama-bench` at depth 0, and quoted here because this project has not
+re-measured Bonsai 2 yet. They are not comparable to the rows above them: those
+are 8k-context agent turns with tuned defaults, this is a short-context
+throughput number. See [Bonsai 2 27B](#bonsai-2-27b-a-27b-in-6-gb).
 
 Measured on an M5 Pro. **Every figure is at 8k context**, which is what an agent
 actually pays, with the tuned defaults — except `mlx-q-27b-4bit`, which is
@@ -530,6 +539,53 @@ pinning to its base commit costs Gemma about 2–3%, so the patched build is use
 Without the patch the server detects the head, runs autoregressive, and says
 why, rather than exiting. Details and measurements:
 [docs/GGUF-RUNTIME.md](docs/GGUF-RUNTIME.md).
+
+#### Bonsai 2 27B: a 27B in 6 GB
+
+[PrismML's Bonsai 2 27B](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf)
+is not a new architecture and not an ordinary quantisation: it is **Qwen3.8-27B
+with its weights rotated into a ternary basis** — blockwise Hadamard, then
+{−1, 0, +1} with one shared scale per 128 weights. At 1.72–2.13 bits per weight
+that puts a full 27B in **5.95–7.21 GB**, and Prism measure it at 98.2% of the
+FP16 model's benchmark average. The pitch is footprint, not speed: ~28 t/s
+against the 35B MoE's 141.
+
+| alias | packing | size | notes |
+|---|---|---:|---|
+| **`gguf-b-27b`** | PQ2_0 | 7.21 GB | the default — the packing Prism measured on Apple Silicon, and the faster prompt processing |
+| `gguf-b-27b-ptq1` | PTQ1_0 | 5.95 GB | trits packed densely (1.75 bpw) — smaller, and the pick when memory is tightest |
+
+**Neither runs on stock llama.cpp, and this is the part worth reading.**
+`PQ2_0` and `PTQ1_0` are Prism's own ggml types, and the weights need a Hadamard
+activation transform that is not upstream yet, so a stock build refuses the file
+outright. The dangerous half is the near-miss: stock llama.cpp *loads* the
+similarly-named `Q2_0` without a warning and produces garbage. That is why the
+aliases point only at the packed files, and why a Bonsai model refuses to start
+with an explanation rather than degrading quietly:
+
+```bash
+./lib/fetch-runtime.sh prism    # prebuilt macOS arm64, checksum verified
+```
+
+That installs PrismML's fork into `run/runtimes/prism` and records it as
+`PRISM_RUNTIME` in `env.conf`. It is used **only** for the models that declare
+it, so Gemma, Qwen and the MLX packs keep the stock build they were measured on.
+
+Both aliases are uncensored: Prism's own packs are aligned, because they derive
+from base Qwen3.8-27B, so these point at the community abliteration instead.
+Nothing else changes — the architecture is what it was, so the Prism runtime and
+the KV arithmetic apply to the abliterated weights exactly as published.
+
+Two things to know before you pick it:
+
+- **It thinks by default, and will not be talked out of it.** Bonsai 2 is a
+  reasoning model, and its own documentation says `low` reasoning effort is
+  unsupported — selecting it behaves close to `xhigh`. `THINKING` caps the
+  thought channel with `--reasoning-budget`, so budget for the thinking.
+- **Speculation is not worth it here.** Prism ship an optional drafter, but their
+  own numbers say that on Apple Silicon it pays off only for ternary code and
+  maths (~1.2×) and is a net slowdown otherwise, so this project leaves it off.
+  The uncensored packs ship neither a draft head nor a vision projector.
 
 #### Why Q4_0 is the default quant
 

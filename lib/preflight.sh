@@ -397,6 +397,10 @@ model_size_gb() {
     *Qwen3.8-27B*)                          echo 19 ;;
     *Qwen3.8-9B*)                           echo 6  ;;
     *Qwen3.6-35B*)                          echo 22 ;;
+    # Bonsai 2: the two packings are ~1.3 GB apart, and both repo ids contain
+    # "Bonsai-2-27B", so the smaller one has to be matched first.
+    *Bonsai-2-27B-1bit*)                    echo 6  ;;
+    *Bonsai-2-27B*)                         echo 8  ;;
     *)                                      echo 0  ;;
   esac
 }
@@ -412,6 +416,8 @@ model_note() {
     gguf-q-27b)      echo "dense 27B, ~13.5 t/s; its MTP head needs a build step - or use the MLX build (~2.2x faster)" ;;
     gguf-q-9b)       echo "dense 9B, ~44 t/s - the MLX build is about twice this (~90 t/s)" ;;
     gguf-q-35ba3b)   echo "MoE like the default, different family (Qwen 3.6, not 3.8)" ;;
+    gguf-b-27b)      echo "27B in 7.2 GB (ternary) - needs ./lib/fetch-runtime.sh prism" ;;
+    gguf-b-27b-ptq1) echo "the smaller ternary packing, 6 GB - same runtime requirement" ;;
     # ── MLX ──
     mlx-q-35ba3b)    echo "35B MoE, ~3B active - fastest Qwen here (~98 t/s), best agent balance" ;;
     mlx-q-27b-4bit)  echo "dense 27B 4-bit - the quality pick (~30 t/s)" ;;
