@@ -53,7 +53,8 @@ depends on what you are doing today.
    1  speed    Max t/s          peak decode; one client, thinking bounded
    2  agent    Max Agentic AI   tool loops; thinking off, 4 sessions, prefixes kept
    3  writer   Max Long Writer  long context; shallower drafts, long replies, one client
-   4  custom   Custom           use env.conf exactly as written
+   4  manual   Set by hand      you set thinking, context, sessions - this start only
+   5  custom   Custom           use env.conf exactly as written
 ```
 
 | | for | what it changes |
@@ -61,10 +62,24 @@ depends on what you are doing today.
 | **Max t/s** | one client, fastest possible replies | tuned MTP depth, f16 KV, thinking bounded, one session holding the whole GPU |
 | **Max Agentic AI** | a loop of tool calls | thinking **off** so a modest `max_tokens` cannot truncate a call, 4 concurrent sessions, prefix cache kept on disk, room for a full tool call |
 | **Max Long Writer** | novels, long documents | shallower drafting (depth 1) so there is less to verify per cycle as the window fills, thinking off, 8192-token replies, one client |
+| **Set by hand** | one odd run — a huge context, a few extra sessions | asks for thinking, context, concurrent sessions and the reply cap, then applies them to **that start only** |
 
 Skip the question with `./start.sh --profile agent`, or set `EXPERT_PROFILE` in
 `env.conf` and it stops asking. `custom` leaves every setting exactly as you
 wrote it.
+
+**Set by hand** is for the run that is not like the others. It asks four
+questions — thinking, context window, concurrent sessions, reply cap — each
+defaulting to what `env.conf` already says, so pressing Enter through it is the
+same as `custom`. The answers apply to that start and are **not written to
+`env.conf`** unless you say yes at the end, because a one-off context window is
+not a standing preference. A single setting can also be overridden without any
+prompt:
+
+```bash
+./start.sh --profile agent --set THINKING=high   # explicit beats the profile
+./start.sh --set CONTEXT_WINDOW=65536            # keep everything else
+```
 
 A profile only touches the settings it names — **your model, context window and
 memory cap are always kept**, so switching profile never silently changes which

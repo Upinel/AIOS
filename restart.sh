@@ -15,7 +15,7 @@
 #
 #   ./restart.sh              graceful stop, then start with the current env.conf
 #   ./restart.sh --model X    switch to a model (and therefore an engine)
-#   ./restart.sh --profile Y  master a workload: speed | agent | writer
+#   ./restart.sh --profile Y  master a workload: speed | agent | writer | manual
 #   ./restart.sh --force      SIGKILL on stop if the graceful path hangs
 #   ./restart.sh --force-load start even when the plan looks too big for this Mac
 #   ./restart.sh --wait 5     extra seconds to let the port and GPU settle
@@ -136,7 +136,7 @@ load_engine "$ENGINE_R" >/dev/null 2>&1 || true
 # ── which workload to master ─────────────────────────────────────────────────
 if [[ -n "$PROFILE_OVERRIDE" ]]; then
   case "$PROFILE_OVERRIDE" in
-    speed|agent|writer|custom)
+    speed|agent|writer|manual|custom)
       EXPERT_PROFILE="$PROFILE_OVERRIDE"
       # Persisted like the interactive choice, but NOT under --print: a dry run
       # that rewrites your config is a trap, and it is how a test that checks
@@ -144,14 +144,23 @@ if [[ -n "$PROFILE_OVERRIDE" ]]; then
       (( PRINT_ONLY )) || set_config_value EXPERT_PROFILE "$EXPERT_PROFILE"
       info "Profile: $(expert_profile_label "$EXPERT_PROFILE") - $(expert_profile_note "$EXPERT_PROFILE")"
       ;;
-    *) die "--profile must be one of speed | agent | writer | custom" ;;
+    *) die "--profile must be one of speed | agent | writer | manual | custom" ;;
   esac
 elif (( ! PRINT_ONLY )); then
   choose_expert_profile || true
 fi
 
+# The manual questions are asked here and nowhere else: start.sh takes the
+# answers back through --set, so it does not ask them again. That hand-over is
+# the fix for the workload menu appearing twice - the model choice was already
+# handed over as --model for exactly this reason, and the profile was not.
+if [[ "$EXPERT_PROFILE" == "manual" && -z "${MANUAL_VALUES:-}" ]] && (( ! PRINT_ONLY )); then
+  prompt_manual_settings || true
+fi
+
 # Applied before the banner, so the banner reports what will actually start.
 apply_expert_profile
+[[ -n "${MANUAL_VALUES:-}" ]] && apply_set_overrides "$MANUAL_VALUES"
 
 # Now that the profile has had its say about MTP_DEPTH.
 EFFECTIVE_DEPTH="$(effective_depth 2>/dev/null || echo 3)"
@@ -211,14 +220,22 @@ sleep "$SETTLE"
 # start.sh records the new config snapshot itself, so a failed start still
 # leaves an accurate "last attempted" record for the next diff.
 # Two branches rather than an array: expanding an empty array is an unbound
-# variable error in bash 3.2 under `set -u`. FORCE_FLAG is a plain string for
-# the same reason - it is either empty or one flag, never a list.
+# variable error in bash 3.2 under `set -u`. FORCE_FLAG and SET_FLAGS are plain
+# strings for the same reason - empty or one flag each, never a list.
+#
+# --profile is handed over, not re-asked. Without it start.sh runs the workload
+# picker again and the user answers the same question twice - which is what
+# happened, and the menu appearing twice is the bug this fixes.
+[[ -n "${EXPERT_PROFILE:-}" ]] || EXPERT_PROFILE="custom"
 FORCE_FLAG=""
 (( FORCE_LOAD )) && FORCE_FLAG="--force-load"
+SET_FLAGS=""
+for _v in ${MANUAL_VALUES:-}; do SET_FLAGS="$SET_FLAGS --set $_v"; done
+
 if (( PICKED )); then
-  "$REPO_DIR/start.sh" --model "$MODEL_REPO" $FORCE_FLAG
+  "$REPO_DIR/start.sh" --model "$MODEL_REPO" --profile "$EXPERT_PROFILE" $FORCE_FLAG $SET_FLAGS
 else
-  "$REPO_DIR/start.sh" $FORCE_FLAG
+  "$REPO_DIR/start.sh" --profile "$EXPERT_PROFILE" $FORCE_FLAG $SET_FLAGS
 fi
 RC=$?
 

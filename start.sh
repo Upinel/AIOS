@@ -17,7 +17,8 @@
 #   ./start.sh --foreground    run attached to this terminal (Ctrl-C to stop)
 #   ./start.sh --print         print the command it would run, then exit
 #   ./start.sh --model mlx-q-9b   serve a different model for this run only
-#   ./start.sh --profile agent    master a workload: speed | agent | writer
+#   ./start.sh --profile agent    master a workload: speed | agent | writer | manual
+#   ./start.sh --set CONTEXT_WINDOW=65536   override one setting for this run
 #   ./start.sh --force-load    start even when the plan looks too big for this Mac
 #
 # The engine is not a setting. A model belongs to exactly one runtime - a GGUF
@@ -30,7 +31,7 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 load_config
 
-FOREGROUND=0; PRINT_ONLY=0; MODEL_OVERRIDE=""; PROFILE_OVERRIDE=""
+FOREGROUND=0; PRINT_ONLY=0; MODEL_OVERRIDE=""; PROFILE_OVERRIDE=""; SET_VALUES=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -f|--foreground) FOREGROUND=1 ;;
@@ -40,6 +41,9 @@ while [[ $# -gt 0 ]]; do
     --force-load)    FORCE_LOAD=1 ;;
     --model)         MODEL_OVERRIDE="$2"; shift ;;
     --profile)       PROFILE_OVERRIDE="$2"; shift ;;
+    # Repeatable, KEY=VALUE. ./restart.sh uses it to hand over what its manual
+    # prompts collected, so the questions are asked once rather than twice.
+    --set)           SET_VALUES="$SET_VALUES ${2:-}"; shift ;;
     -h|--help)       show_usage "$0"; exit 0 ;;
     *)               die "Unknown argument: $1  (try --help)" ;;
   esac
@@ -76,7 +80,7 @@ fi
 # answer is saved, so the next start defaults to it.
 if [[ -n "$PROFILE_OVERRIDE" ]]; then
   case "$PROFILE_OVERRIDE" in
-    speed|agent|writer|custom)
+    speed|agent|writer|manual|custom)
       EXPERT_PROFILE="$PROFILE_OVERRIDE"
       # Persisted like the interactive choice, but NOT under --print: a dry run
       # that rewrites your config is a trap, and it is how a test that checks
@@ -84,15 +88,23 @@ if [[ -n "$PROFILE_OVERRIDE" ]]; then
       (( PRINT_ONLY )) || set_config_value EXPERT_PROFILE "$EXPERT_PROFILE"
       info "Profile: $(expert_profile_label "$EXPERT_PROFILE") - $(expert_profile_note "$EXPERT_PROFILE")"
       ;;
-    *) die "--profile must be one of speed | agent | writer | custom" ;;
+    *) die "--profile must be one of speed | agent | writer | manual | custom" ;;
   esac
 elif (( ! PRINT_ONLY )); then
   choose_expert_profile || true
 fi
 
-# Apply it before the engine reads any of these, or the launch command would be
-# built from the values the profile is about to replace.
+# The manual questions, in ONE place so that they cannot be asked twice. A
+# --set already carries the answers when ./restart.sh did the asking, and a
+# --print dry run must not block on input.
+if [[ "$EXPERT_PROFILE" == "manual" && -z "$SET_VALUES" ]] && (( ! PRINT_ONLY )); then
+  prompt_manual_settings || true
+fi
+
+# Apply the profile first, then any explicit override, so an explicit setting
+# wins: --profile agent --set THINKING=high means high.
 apply_expert_profile
+[[ -n "$SET_VALUES" ]] && apply_set_overrides "$SET_VALUES"
 
 # Re-derive the alias from the repo that is actually being served. The picker
 # sets MODEL_REPO and MODEL_DIR but not MODEL_ALIAS, so without this the engine

@@ -480,13 +480,14 @@ require_macos() {
 # Rather than bake in a guess, these stay on the user's setting.
 #
 # f16 KV is in all three profiles, since it won at every context tested.
-EXPERT_PROFILES="speed agent writer"
+EXPERT_PROFILES="speed agent writer manual"
 
 expert_profile_label() {
   case "$1" in
     speed)  echo "Max t/s" ;;
     agent)  echo "Max Agentic AI" ;;
     writer) echo "Max Long Writer" ;;
+    manual) echo "Set by hand" ;;
     custom) echo "Custom" ;;
     *)      echo "$1" ;;
   esac
@@ -497,6 +498,7 @@ expert_profile_note() {
     speed)  echo "peak decode; one client, thinking bounded" ;;
     agent)  echo "tool loops; thinking off, 4 sessions, prefixes kept" ;;
     writer) echo "long context; shallower drafts, long replies, one client" ;;
+    manual) echo "you set thinking, context, sessions - this start only" ;;
     *)      echo "" ;;
   esac
 }
@@ -510,6 +512,9 @@ expert_profile_note() {
 apply_expert_profile() {
   case "${EXPERT_PROFILE:-speed}" in
     custom) return 0 ;;
+    # Nothing to apply: the manual prompts have already set these, and a preset
+    # must not overwrite an answer the user gave a second ago.
+    manual) return 0 ;;
 
     speed)
       KV_QUANT="f16"                   # measured fastest on both engines
@@ -569,6 +574,155 @@ apply_expert_profile() {
       die "EXPERT_PROFILE=\"$EXPERT_PROFILE\" is not one of: custom $EXPERT_PROFILES"
       ;;
   esac
+}
+
+# ── manual: set the few knobs that change a run ──────────────────────────────
+# "manual" is not a fourth preset. It is an invitation to set the handful of
+# settings that actually change how a server behaves - thinking, context,
+# concurrent sessions, reply cap - and to set them for THIS start.
+#
+# Every prompt defaults to the value already in env.conf, so pressing Enter all
+# the way through is exactly "custom". The answers are deliberately NOT written
+# to env.conf by default: a profile is a standing choice, a one-off context
+# window is not, and a start that silently rewrites the user's config is a bug
+# this project has already had to fix once. Keeping them is offered at the end
+# and defaults to no.
+#
+# The keys a --set is allowed to touch. An allowlist, not "assign whatever you
+# are handed": a start script that will set any variable it is given can be
+# talked into setting PATH.
+MANUAL_SETTABLE="THINKING CONTEXT_WINDOW MAX_RESPONSE_TOKENS PARALLEL_SLOTS MAX_CONCURRENT KV_QUANT MEMORY_LIMIT_GB MTP_DEPTH"
+
+# What the manual prompts produced, as "KEY=VALUE KEY=VALUE". ./restart.sh hands
+# this to ./start.sh through --set, which is how the questions get asked once
+# rather than twice.
+MANUAL_VALUES=""
+
+# Apply "KEY=VALUE" overrides. Called after apply_expert_profile, so an explicit
+# setting beats a preset: --profile agent --set THINKING=high means high.
+apply_set_overrides() {
+  local kv key val
+  for kv in $1; do
+    [[ -n "$kv" ]] || continue
+    [[ "$kv" == *=* ]] || die "--set needs KEY=VALUE, got '$kv'"
+    key="${kv%%=*}"
+    val="${kv#*=}"
+    case " $MANUAL_SETTABLE " in
+      *" $key "*) ;;
+      *) die "--set $key is not a setting this accepts.
+    Settable: $MANUAL_SETTABLE" ;;
+    esac
+    printf -v "$key" '%s' "$val"
+  done
+  return 0
+}
+
+# Bounds for the manual prompts. Named once so the question printed and the
+# answer accepted cannot drift apart, and pure so they can be tested without a
+# terminal - which matters, because the prompt itself needs one.
+MANUAL_MIN_CONTEXT=4096
+MANUAL_MAX_CONTEXT=262144
+MANUAL_MAX_SESSIONS=16
+MANUAL_MIN_REPLY=512
+MANUAL_MAX_REPLY=32768
+
+manual_ok_context() {
+  [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= MANUAL_MIN_CONTEXT && $1 <= MANUAL_MAX_CONTEXT ))
+}
+
+manual_ok_sessions() {
+  [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= MANUAL_MAX_SESSIONS ))
+}
+
+manual_ok_reply() {
+  [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= MANUAL_MIN_REPLY && $1 <= MANUAL_MAX_REPLY ))
+}
+
+# Ask the manual questions. Returns 1 when there is no terminal to ask on, in
+# which case env.conf stands as written.
+#
+# AIOS_MANUAL_FORCE_TTY exists for the regression suite. Reading these answers
+# needs a terminal, a pty is exactly what a sandbox tends to refuse, and the
+# alternative is leaving the prompt's parsing and retry logic untested. It only
+# ever turns the gate OFF; nothing in the product sets it.
+prompt_manual_settings() {
+  local v sessions
+
+  if [[ ! -t 0 && "${AIOS_MANUAL_FORCE_TTY:-0}" != "1" ]]; then
+    warn "manual needs a terminal to ask on; using env.conf as written."
+    return 1
+  fi
+
+  log ""
+  log "  ${C_BOLD}Manual${C_RESET}   ${C_DIM}this start only - Enter keeps the value shown${C_RESET}"
+  log ""
+
+  # thinking
+  while :; do
+    printf '  %-12s %s  [%s] ' "thinking" "off|minimal|low|medium|high" "$THINKING"
+    read -r v || v=""
+    [[ -z "$v" ]] && break
+    if thinking_level_ok "$v"; then THINKING="$v"; break; fi
+    warn "'$v' is not a thinking level."
+  done
+
+  # context window
+  while :; do
+    printf '  %-12s %s  [%s] ' "context" "${MANUAL_MIN_CONTEXT}-${MANUAL_MAX_CONTEXT} tokens" "$CONTEXT_WINDOW"
+    read -r v || v=""
+    [[ -z "$v" ]] && break
+    if manual_ok_context "$v"; then CONTEXT_WINDOW="$v"; break; fi
+    warn "'$v' is not a context between ${MANUAL_MIN_CONTEXT} and ${MANUAL_MAX_CONTEXT}."
+  done
+
+  # concurrent sessions: both spellings, because the engines differ on which
+  # one they read. Setting one and not the other is how a "4 session" server
+  # ends up serving one.
+  while :; do
+    sessions="${PARALLEL_SLOTS:-1}"
+    printf '  %-12s %s  [%s] ' "sessions" "1-${MANUAL_MAX_SESSIONS} concurrent" "$sessions"
+    read -r v || v=""
+    [[ -z "$v" ]] && break
+    if manual_ok_sessions "$v"; then
+      PARALLEL_SLOTS="$v"; MAX_CONCURRENT="$v"; break
+    fi
+    warn "'$v' is not a session count between 1 and ${MANUAL_MAX_SESSIONS}."
+  done
+
+  # reply cap
+  while :; do
+    printf '  %-12s %s  [%s] ' "max reply" "${MANUAL_MIN_REPLY}-${MANUAL_MAX_REPLY} tokens" "$MAX_RESPONSE_TOKENS"
+    read -r v || v=""
+    [[ -z "$v" ]] && break
+    if manual_ok_reply "$v"; then MAX_RESPONSE_TOKENS="$v"; break; fi
+    warn "'$v' is not a reply cap between ${MANUAL_MIN_REPLY} and ${MANUAL_MAX_REPLY}."
+  done
+
+  MANUAL_VALUES="THINKING=$THINKING CONTEXT_WINDOW=$CONTEXT_WINDOW"
+  MANUAL_VALUES="$MANUAL_VALUES PARALLEL_SLOTS=$PARALLEL_SLOTS MAX_CONCURRENT=$MAX_CONCURRENT"
+  MANUAL_VALUES="$MANUAL_VALUES MAX_RESPONSE_TOKENS=$MAX_RESPONSE_TOKENS"
+
+  log ""
+  if manual_confirm_keep; then
+    for v in $MANUAL_VALUES; do
+      set_config_value "${v%%=*}" "${v#*=}"
+    done
+    ok "Saved to env.conf."
+  else
+    info "This run only - ./restart.sh will ask again."
+  fi
+  return 0
+}
+
+# "Keep these?" - the same seam as above: forced runs read stdin so the suite
+# can answer, real runs ask on the terminal.
+manual_confirm_keep() {
+  local r=""
+  if [[ "${AIOS_MANUAL_FORCE_TTY:-0}" == "1" ]]; then
+    read -r r || r=""
+    case "$r" in [Yy]*) return 0 ;; *) return 1 ;; esac
+  fi
+  ask_yes_no "Keep these in env.conf?" n
 }
 
 # Ask which workload to master. Saves the answer, so the next start defaults to
