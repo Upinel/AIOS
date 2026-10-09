@@ -62,6 +62,14 @@ def value_of(path, key):
     return None
 
 
+def value_of_text(text, key):
+    """As value_of(), for a file already in memory."""
+    for line in text.splitlines():
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
 def make_stale(shipped):
     """A plausible file from a few versions back.
 
@@ -114,8 +122,14 @@ def main():
               value_of(merged_path, "MODEL"), '"mlx-q-9b"')
         check("a second one too", value_of(merged_path, "KV_QUANT"), '"q8_0"')
         check("a third one too", value_of(merged_path, "THINKING"), '"medium"')
+        # Read the expected value out of the shipped copy rather than naming it.
+        # env.conf is the user's file by design and HEAD is the shipped copy, so
+        # "the default for this key" means "what this checkout ships". Naming it
+        # here made the suite fail the moment a user picked a different profile,
+        # which is a supported thing to do - it is what the picker asks.
+        shipped_default = value_of_text(shipped, "EXPERT_PROFILE")
         check("a setting the file never had arrives",
-              value_of(merged_path, "EXPERT_PROFILE"), '"speed"')
+              value_of(merged_path, "EXPERT_PROFILE"), shipped_default)
         check("and the report says it was added",
               "EXPERT_PROFILE" in rep["added"], True)
 

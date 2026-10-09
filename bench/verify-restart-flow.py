@@ -178,15 +178,52 @@ def stop_if_we_started_it(was):
     return False
 
 
+# The user's env.conf, and the copy this suite restores it from. Module level
+# because the alarm handler below runs no finally blocks: it calls os._exit(),
+# which skips every cleanup path in this file.
+_ENV_FILE = None
+_ENV_BACKUP = None
+
+
+def _restore_env():
+    """Put the user's env.conf back, and clear this suite's scratch files."""
+    global _ENV_BACKUP
+    if _ENV_BACKUP and os.path.exists(_ENV_BACKUP):
+        shutil.copyfile(_ENV_BACKUP, _ENV_FILE)
+    if _ENV_FILE:
+        for scratch in (_ENV_FILE + ".verify-flow", _ENV_FILE + ".ticktest"):
+            if os.path.exists(scratch):
+                os.unlink(scratch)
+    _ENV_BACKUP = None
+
+
 def main():
+    try:
+        return _run()
+    finally:
+        _restore_env()
+
+
+def _run():
+    global _ENV_FILE, _ENV_BACKUP
     print("\n  Model picker path in start/restart\n")
     # These drives are real runs, not --print, so the pickers SAVE what they are
     # told. Checking an answer therefore changes the user's config - which is
-    # how a suite run left EXPERT_PROFILE=writer behind. Restored at the end,
-    # whatever happens.
+    # how a suite run left EXPERT_PROFILE=writer behind.
+    #
+    # A backup already on disk means a previous run died part way, and the file
+    # on disk may be its scenario rather than the user's config. That backup is
+    # older and authoritative, so restore it BEFORE overwriting it - copying the
+    # current file over the good copy is how a crash becomes permanent.
     env_file = os.path.join(REPO, "env.conf")
     env_backup = env_file + ".verify-flow"
+    _ENV_FILE = env_file
+    if os.path.exists(env_backup):
+        print("  (a previous run left a backup behind - restoring it first)")
+        _ENV_BACKUP = env_backup
+        _restore_env()
     shutil.copyfile(env_file, env_backup)
+    _ENV_BACKUP = env_backup
     before = server_pid()
     # Belt and braces: if anything here wedges, say so and exit rather than
     # taking the whole suite with it.
@@ -294,8 +331,7 @@ def main():
         print("  (stopped a server this test started)")
 
     # Put the configuration back, and clean up any backup the scripts made.
-    shutil.copyfile(env_backup, env_file)
-    os.unlink(env_backup)
+    _restore_env()
     for f in os.listdir(REPO):
         if f.startswith("env.conf.bak-"):
             os.unlink(os.path.join(REPO, f))
@@ -307,6 +343,9 @@ def main():
 def _timeout(_sig, _frm):
     print("\n  [FAIL] the picker drive did not finish within 180s; exiting so the\n"
           "         rest of the suite can run.\n", flush=True)
+    # os._exit() runs no finally blocks, so the restore has to happen here or a
+    # wedged run leaves the user's env.conf rewritten.
+    _restore_env()
     os._exit(1)
 
 

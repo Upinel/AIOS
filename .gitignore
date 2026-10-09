@@ -11,3 +11,9 @@ __pycache__/
 
 # env.conf backups made by ./update_env.sh - the user's, not the repo's.
 env.conf.bak-*
+
+# Scratch files the verification suites make beside env.conf. A clean run
+# restores and removes them; these patterns are for the runs that crash, so a
+# `git add -A` cannot sweep a copy of the user's config into a commit.
+env.conf.verify-*
+env.conf.ticktest
