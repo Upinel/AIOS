@@ -1060,6 +1060,26 @@ something a flag will fix.
 
 ## Running it day to day
 
+### When a model does not fit
+
+`./start.sh` estimates what the model will need — the weights plus the KV cache
+— and says so when that is a stretch for this Mac. The estimate is derived from
+the model's own GGUF metadata where it can be, so a custom model is priced by
+its real architecture instead of a fallback that assumes a 27B hybrid.
+
+A plan that fits in RAM but overruns `MEMORY_LIMIT_GB` loads anyway, with a
+warning. Only a plan whose **weights and cache alone** exceed this Mac's RAM
+asks first, because that is the one that will spend its life paging:
+
+```bash
+./start.sh --force-load      # this run only
+FORCE_LOAD=1                 # in env.conf, from then on
+```
+
+Neither is a hard limit in the first place. macOS pages and compresses, other
+launchers simply try, and a model that "should not fit" often runs — slowly. The
+warning is there to tell you what you are choosing, not to choose for you.
+
 ### Updating the code
 
 ```bash

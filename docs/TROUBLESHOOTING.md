@@ -236,7 +236,9 @@ tail -n 40 run/server.log
 | `Port ... already in use` | Another server holds the port. `./stop.sh` finds and stops it. |
 | `No model weights found` | Not downloaded. Run `./install.sh` or `./model_download.sh`. |
 | `Insufficient Memory` | Lower `CONTEXT_WINDOW`, set `KV_QUANT="q4_0"`, or lower `BATCH_SIZE`. |
-| `Plan needs ~X GB but this Mac has Y` | The memory check refused before loading. Lower the context. |
+| `Refusing to load a plan this size` | The weights plus KV cache are larger than this Mac's RAM. It is a judgement call, not a wall: `./start.sh --force-load`, or `FORCE_LOAD=1` in env.conf. |
+| `Tight fit: ... over MEMORY_LIMIT_GB` | A warning, not a failure - it loads. Raise the cap, lower `CONTEXT_WINDOW`, or set `KV_QUANT="q4"` to clear it. |
+| `Plan needs ~X GB but this Mac has Y` | Older builds refused here. The guard now separates what a model needs from its headroom and only asks when the requirement itself is over the line. Update, or use `--force-load`. |
 | `needs the PrismML llama.cpp fork` | A `gguf-b-*` model, without its runtime. `./lib/fetch-runtime.sh prism` installs it once. |
 | `error compiling source`, `tensor API is not supported` | The M5 Metal probe failing. Harmless — ggml disables the tensor API and carries on. Set `METAL_TENSOR_API="off"` to skip the attempt entirely. |
 

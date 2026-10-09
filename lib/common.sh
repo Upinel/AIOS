@@ -347,7 +347,11 @@ QUOTED = {"MODEL", "KV_QUANT", "PROFILE", "THINKING", "MODEL_QUANT",
           "SSD_SESSION_CACHE", "METAL_TENSOR_API", "SERVED_MODEL_NAME",
           "HOST", "API_KEY_FILE", "LLAMA_SERVER", "TOOL_TEMPLATE",
           "MODELS_DIR", "LOG_FILE", "DRAFT_PATCHED_RUNTIME",
-          "MTP_DEPTH", "PREFILL_CHUNK_TOKENS", "PRISM_RUNTIME"}
+          "MTP_DEPTH", "PREFILL_CHUNK_TOKENS", "PRISM_RUNTIME",
+          # EXPERT_PROFILE was missing, so the picker wrote it unquoted while
+          # everything around it in env.conf is quoted. Same value either way,
+          # but it made the file look hand-edited when it was not.
+          "EXPERT_PROFILE"}
 src = open(path, encoding="utf-8").read()
 val = f'"{value}"' if key in QUOTED and not value.startswith('"') else value
 new, n = re.subn(rf'^{re.escape(key)}=.*$', f'{key}={val}', src, count=1, flags=re.M)
@@ -386,6 +390,7 @@ load_config() {
   UBATCH_SIZE=512
   MAX_CONCURRENT=1
   MEMORY_LIMIT_GB=48
+  FORCE_LOAD=0
   USE_MLOCK=1
   HOST="0.0.0.0"
   PORT=8000
@@ -1031,6 +1036,166 @@ kv_kb_for_engine() {
   echo "$kb"
 }
 
+# ── KV cost from the weights themselves ──────────────────────────────────────
+# The table above is right for the models this project ships and a guess for
+# anything else, and the guess is what a custom repo gets. The fallback is a
+# flat 64 KB/token, so an 8B model with a couple of KV heads was priced like a
+# 27B hybrid - and start.sh then refused to load something that runs perfectly
+# well in other launchers, which is exactly the report this exists to fix.
+#
+# GGUF metadata carries the real answer and sits at the head of the file, so
+# this reads a bounded prefix rather than the weights. Empty output means "not
+# a shape I know", and the caller falls back to the table.
+#
+# The same derivation is what bench/kv-from-gguf.py uses to generate the table;
+# this is the runtime copy of it, deliberately kept small.
+GGUF_META_PREFIX_BYTES=$(( 64 * 1024 * 1024 ))
+
+kv_kb_from_gguf() {
+  local f="${1:-}"
+  [[ -n "$f" && -f "$f" ]] || { echo ""; return 0; }
+  python3 - "$f" "$GGUF_META_PREFIX_BYTES" <<'PY' 2>/dev/null || true
+import struct, sys
+
+path, limit = sys.argv[1], int(sys.argv[2])
+with open(path, "rb") as fh:
+    blob = fh.read(limit)
+
+if blob[:4] != b"GGUF":
+    raise SystemExit(0)
+
+SCALARS = {0: ("<B", 1), 1: ("<b", 1), 2: ("<H", 2), 3: ("<h", 2),
+           4: ("<I", 4), 5: ("<i", 4), 6: ("<f", 4), 7: ("<?", 1),
+           10: ("<Q", 8), 11: ("<q", 8), 12: ("<d", 8)}
+
+
+class Buf:
+    def __init__(self, b):
+        self.b, self.i = b, 0
+
+    def read(self, n):
+        if self.i + n > len(self.b):
+            raise EOFError
+        v = self.b[self.i:self.i + n]
+        self.i += n
+        return v
+
+    def u32(self):
+        return struct.unpack("<I", self.read(4))[0]
+
+    def u64(self):
+        return struct.unpack("<Q", self.read(8))[0]
+
+    def string(self):
+        return self.read(self.u64()).decode("utf-8", "replace")
+
+
+def value(f, t):
+    if t == 8:
+        return f.string()
+    if t == 9:
+        et, n = f.u32(), f.u64()
+        if et == 8:
+            return [f.string() for _ in range(n)]
+        fmt, sz = SCALARS[et]
+        return list(struct.unpack("<" + fmt[1] * n, f.read(sz * n)))
+    fmt, sz = SCALARS[t]
+    return struct.unpack(fmt, f.read(sz))[0]
+
+
+try:
+    f = Buf(blob)
+    f.read(4)
+    f.u32()                       # version
+    f.u64()                       # tensor count
+    meta = {}
+    for _ in range(f.u64()):
+        k = f.string()
+        meta[k] = value(f, f.u32())
+except (EOFError, KeyError, struct.error):
+    # Metadata runs past the prefix we read. Refusing to read the whole file is
+    # the point: the caller falls back to the table.
+    raise SystemExit(0)
+
+arch = meta.get("general.architecture", "")
+
+
+def g(suffix):
+    return meta.get(f"{arch}.{suffix}")
+
+
+blocks = g("block_count")
+if blocks is None:
+    raise SystemExit(0)
+
+# bytes/token = 4 x (K and V, 2 bytes each) x caching layers x heads x head_dim
+interval = g("full_attention_interval")
+if interval:
+    kb = 4 * (blocks // interval) * g("attention.head_count_kv") \
+        * g("attention.key_length") // 1024
+    print(kb)
+    raise SystemExit(0)
+
+pattern = g("attention.sliding_window_pattern")
+if pattern is not None:
+    kvh = g("attention.head_count_kv")
+    n_full = sum(1 for p in pattern if not p)
+    idx = next((i for i, p in enumerate(pattern) if not p), None)
+    if idx is not None:
+        # The per-layer head count is not uniform, so take it from a layer that
+        # actually caches rather than from position 0.
+        heads = kvh[idx] if isinstance(kvh, list) else kvh
+        kb = 4 * n_full * heads * g("attention.key_length") // 1024
+        print(kb)
+        raise SystemExit(0)
+PY
+}
+
+# KV KB/token for a model on disk: its own metadata when it has a usable
+# architecture, the table otherwise. $1 = model dir, $2 = engine.
+kv_kb_for_model_dir() {
+  local dir="$1" eng="$2" main kb
+  if [[ "$eng" == "gguf" ]]; then
+    main="$(model_main_gguf "$dir" 2>/dev/null || true)"
+    kb="$(kv_kb_from_gguf "$main" 2>/dev/null || true)"
+    if [[ -n "$kb" ]]; then
+      echo "$kb"
+      return 0
+    fi
+  fi
+  kv_kb_for_engine "$eng"
+}
+
+# ── will this plan fit? ──────────────────────────────────────────────────────
+# Separate what the model NEEDS from what it would like. The requirement is the
+# weights plus the KV cache: below that it cannot run. Everything above it -
+# activations, the compute graph, the projector, the runtime's own buffers - is
+# real but elastic, and macOS will page and compress around it.
+#
+# The old guard added a flat 3 GB to the requirement and then refused to start,
+# so a 16 GB Mac was told an 18 GB "plan" would not load when the weights and
+# cache together were 15 GB and it loaded fine everywhere else.
+#
+#   ok        fits this Mac and the configured cap
+#   tight     fits this Mac, but not by much, or over the cap - load it, warn
+#   unlikely  weights plus cache alone exceed RAM - ask before loading
+MEMORY_HEADROOM_GB=3
+
+load_plan_verdict() {
+  local weights="$1" kv="$2" ram="$3" cap="${MEMORY_LIMIT_GB:-0}"
+  local core=$(( weights + kv ))
+  local plan=$(( core + MEMORY_HEADROOM_GB ))
+  local verdict="ok"
+  if (( core > ram )); then
+    verdict="unlikely"
+  elif (( plan > ram )); then
+    verdict="tight"
+  elif (( cap > 0 )) && (( plan > cap )); then
+    verdict="tight"
+  fi
+  printf '%s %s %s\n' "$verdict" "$core" "$plan"
+}
+
 # ── cross-engine value translation ───────────────────────────────────────────
 # env.conf holds one vocabulary; each engine has its own spelling for the same
 # idea. These are the translators, so a shared key never has to hold two values
@@ -1102,11 +1267,23 @@ live_thinking_payload() {
 # Reads from /dev/tty when stdin is not a terminal, so a scripted install
 # (curl | bash) can still ask. Returns 1 without asking when there is no
 # terminal at all, which is what makes an unattended install work.
+# Is there a terminal to ask a question on?
+#
+# `-c /dev/tty` is not enough, and the failure it allows is ugly: /dev/tty is a
+# character device even when the process has no controlling terminal, so the
+# test passes, the prompt is printed, and then the open fails with ENXIO -
+# leaving a raw "/dev/tty: Device not configured" in the middle of our own
+# message. Background starts and pipes hit this. Try the open instead.
+have_tty() {
+  [[ -c /dev/tty ]] || return 1
+  { : < /dev/tty; } 2>/dev/null
+}
+
 ask_yes_no() {
   local q="$1" default="${2:-n}" reply="" hint="[y/N]"
   [[ "$default" == "y" ]] && hint="[Y/n]"
 
-  if [[ ! -c /dev/tty ]]; then
+  if ! have_tty; then
     [[ "$default" == "y" ]] && return 0 || return 1
   fi
 

@@ -55,6 +55,7 @@ bench/verify-model-picker.py
 bench/verify-quant-select.py
 bench/verify-draft-select.py
 bench/verify-runtime-select.py
+bench/verify-memory-guard.py
 bench/verify-paste.py
 "
 

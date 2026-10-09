@@ -18,6 +18,7 @@
 #   ./start.sh --print         print the command it would run, then exit
 #   ./start.sh --model mlx-q-9b   serve a different model for this run only
 #   ./start.sh --profile agent    master a workload: speed | agent | writer
+#   ./start.sh --force-load    start even when the plan looks too big for this Mac
 #
 # The engine is not a setting. A model belongs to exactly one runtime - a GGUF
 # checkpoint can only run on llama.cpp, an MTPLX pack can only run on MTPLX - so
@@ -34,6 +35,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -f|--foreground) FOREGROUND=1 ;;
     --print)         PRINT_ONLY=1 ;;
+    # FORCE_LOAD already arrived from env.conf through load_config, so this
+    # flag only ever turns it on for one run.
+    --force-load)    FORCE_LOAD=1 ;;
     --model)         MODEL_OVERRIDE="$2"; shift ;;
     --profile)       PROFILE_OVERRIDE="$2"; shift ;;
     -h|--help)       show_usage "$0"; exit 0 ;;
@@ -125,19 +129,55 @@ engine_model_ok "$MODEL_DIR" || die "No complete $(engine_name) model at $MODEL_
     Run ./install.sh, or ./model_download.sh ${MODEL_ALIAS:-$MODEL_REPO}"
 
 # ── memory sanity ────────────────────────────────────────────────────────────
+# This used to refuse outright when weights + cache + 3 GB of headroom exceeded
+# this Mac's RAM. That was wrong twice over: the headroom is a guess, and "does
+# not fit" is not the same as "will not load" - macOS pages and compresses, and
+# other launchers simply try. A custom model made it worse, because an unknown
+# repo was priced from a flat fallback instead of from its own weights, so a
+# small model could be quoted at 27B-hybrid KV and refused on a machine it runs
+# on fine.
+#
+# So: derive the cost from the model where we can, print what the numbers mean,
+# and let the user decide. Only a plan whose weights and cache ALONE exceed RAM
+# asks first, and --force-load (or FORCE_LOAD=1) answers it.
 RAM_GB="$(total_ram_gb)"
 WEIGHTS_GB="$(model_dir_size_gb "$MODEL_DIR")"
-KV_KB="$(kv_kb_for_engine "$ENGINE")"
+KV_KB="$(kv_kb_for_model_dir "$MODEL_DIR" "$ENGINE")"
 KV_GB=$(( CONTEXT_WINDOW * KV_KB / 1024 / 1024 ))
-NEED_GB=$(( WEIGHTS_GB + KV_GB + 3 ))
+read -r PLAN_VERDICT PLAN_CORE_GB PLAN_GB <<< "$(load_plan_verdict "$WEIGHTS_GB" "$KV_GB" "$RAM_GB")"
 
-if (( NEED_GB > MEMORY_LIMIT_GB )); then
-  warn "Plan needs ~${NEED_GB} GB but MEMORY_LIMIT_GB=${MEMORY_LIMIT_GB}."
-  warn "Lower CONTEXT_WINDOW, use KV_QUANT=q4, or raise MEMORY_LIMIT_GB."
-fi
-if (( NEED_GB > RAM_GB )); then
-  die "Plan needs ~${NEED_GB} GB but this Mac has ${RAM_GB} GB. It will not load."
-fi
+case "$PLAN_VERDICT" in
+  ok) ;;
+  tight)
+    warn "Tight fit: ${WEIGHTS_GB} GB of weights + ${KV_GB} GB of KV at ${CONTEXT_WINDOW} context"
+    warn "= ${PLAN_GB} GB with ${MEMORY_HEADROOM_GB} GB of headroom, on a ${RAM_GB} GB Mac."
+    if (( PLAN_GB > RAM_GB )); then
+      warn "That means paging. It usually still runs - just slower."
+    fi
+    if (( MEMORY_LIMIT_GB > 0 )) && (( PLAN_GB > MEMORY_LIMIT_GB )); then
+      warn "It is also over MEMORY_LIMIT_GB=${MEMORY_LIMIT_GB}: lower CONTEXT_WINDOW,"
+      warn "set KV_QUANT=\"q4\", or raise the cap. Loading anyway."
+    fi
+    ;;
+  unlikely)
+    warn "Weights ${WEIGHTS_GB} GB + KV ${KV_GB} GB = ${PLAN_CORE_GB} GB on their own,"
+    warn "and this Mac has ${RAM_GB} GB. That is over the line before any headroom."
+    warn "It can still work - macOS pages and compresses - but expect it to be slow,"
+    warn "and it may fail to load. Nothing here is a hard limit except disk space."
+    if (( FORCE_LOAD )); then
+      warn "FORCE_LOAD is set - going ahead."
+    elif (( PRINT_ONLY )); then
+      # A dry run must never block or prompt; it exists to be inspected.
+      log "  note: --print only. To actually load this, ./start.sh --force-load"
+    elif have_tty && ask_yes_no "Load it anyway?" n; then
+      ok "Going ahead at your request."
+    else
+      die "Refusing to load a plan this size.
+    Override it for one run:   ./start.sh --force-load
+    Or set it and forget it:   FORCE_LOAD=1"
+    fi
+    ;;
+esac
 
 # ── API key (both runtimes refuse a non-loopback bind without one) ───────────
 NEED_KEY=0

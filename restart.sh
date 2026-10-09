@@ -17,6 +17,7 @@
 #   ./restart.sh --model X    switch to a model (and therefore an engine)
 #   ./restart.sh --profile Y  master a workload: speed | agent | writer
 #   ./restart.sh --force      SIGKILL on stop if the graceful path hangs
+#   ./restart.sh --force-load start even when the plan looks too big for this Mac
 #   ./restart.sh --wait 5     extra seconds to let the port and GPU settle
 #   ./restart.sh --print      show what would start, and whether config changed
 #
@@ -41,6 +42,9 @@ PROFILE_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force)  FORCE=1 ;;
+    # Distinct from --force above, which SIGKILLs a stop that hangs. This one is
+    # passed through to start.sh and only skips the memory confirmation.
+    --force-load) FORCE_LOAD=1 ;;
     --wait)   SETTLE="$2"; shift ;;
     --print)  PRINT_ONLY=1 ;;
     --model)  MODEL_OVERRIDE="$2"; shift ;;
@@ -207,11 +211,14 @@ sleep "$SETTLE"
 # start.sh records the new config snapshot itself, so a failed start still
 # leaves an accurate "last attempted" record for the next diff.
 # Two branches rather than an array: expanding an empty array is an unbound
-# variable error in bash 3.2 under `set -u`.
+# variable error in bash 3.2 under `set -u`. FORCE_FLAG is a plain string for
+# the same reason - it is either empty or one flag, never a list.
+FORCE_FLAG=""
+(( FORCE_LOAD )) && FORCE_FLAG="--force-load"
 if (( PICKED )); then
-  "$REPO_DIR/start.sh" --model "$MODEL_REPO"
+  "$REPO_DIR/start.sh" --model "$MODEL_REPO" $FORCE_FLAG
 else
-  "$REPO_DIR/start.sh"
+  "$REPO_DIR/start.sh" $FORCE_FLAG
 fi
 RC=$?
 
