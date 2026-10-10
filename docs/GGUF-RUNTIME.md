@@ -284,7 +284,7 @@ fields so a harness stops reporting `missing required property`, is anchored on
 Gemma's chat template. A Bonsai model therefore does not get it: `./start.sh`
 prints `tool template unavailable, using the model's stock template` and serves
 the model's own template instead. Nothing breaks, but the reliability work in
-[the README](../README.md#agents-that-write-files) does not apply here yet, so
+[the deep dive](DEEP-DIVE.md#agents-that-write-files) does not apply here yet, so
 name the required fields in the agent's system prompt.
 
 ## Why this matters less than it sounds
