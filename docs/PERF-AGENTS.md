@@ -220,8 +220,18 @@ What it decided:
   [`lib/make-fp16-pack.py`](../lib/make-fp16-pack.py) builds one locally
   (692 tensors cast, none out of FP16 range, 4 s), and the MLX engine serves
   `<pack>.fp16` on M1/M2 automatically. On the M5 the FP16 copy decodes the
-  same (84.7 against 82.8 t/s); its M1 effect is the next run of
-  `./bench/small-mac-check.sh`.
+  same (84.7 against 82.8 t/s). On the M1 it is a clear win, depth 1, second
+  run:
+
+  | Qwen 9B on M1 16 GB | BF16 pack | **FP16 copy** |
+  |---|---:|---:|
+  | whole session | 310.8 s | **248.4 s** (−20%) |
+  | cold TTFT, 8k prefix | 98.4 s | **71.7 s** (−27%) |
+  | code decode | 13.7 t/s | **16.6 t/s** (+21%) |
+
+  Depth 2 on the FP16 copy decoded slower (15.5 t/s) and had four failed
+  requests, so depth 1 stays the M1 default. The E2B again preferred depth 3
+  (41.0 t/s on code, 214 s for the session).
 
 ## 4. Subagents and restarts: the prefix router
 
@@ -282,5 +292,5 @@ llama.cpp-only. `AGENT_ROUTER=off` removes it.
 
 ## Still to measure
 
-- **M1 / 16 GB, second run**: the FP16 9B pack against the BF16 one
-  (`./bench/small-mac-check.sh` now includes it on M1/M2).
+- Nothing outstanding from the plan. `./bench/small-mac-check.sh` stays as the
+  way to re-check a small Mac after a runtime bump.

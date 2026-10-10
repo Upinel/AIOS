@@ -106,6 +106,12 @@ BASE="$LLAMA -m $E2B -ngl all -fa on -c $CTX -b 2048 --host 127.0.0.1 --port {po
 --chat-template-kwargs '{\"enable_thinking\":false}' ${TPL[*]:-}"
 DRAFT="-md $E2B_DRAFT --spec-type draft-mtp --spec-draft-ngl all"
 CFG="$OUT/configs.txt"
+# Build the M1/M2 FP16 copy first, with its output on the terminal. Building it
+# inside the block below wrote its progress lines into configs.txt, and the
+# runner then tried to start "configs" called "mtp.safetensors: done".
+if [[ -n "$Q9_DIR" ]] && chip_lacks_bf16; then
+  mlx_ensure_fp16_pack "$Q9_DIR" >&2
+fi
 {
   echo "e2b-nodraft=$BASE -ub 512 -ctk f16 -ctv f16"
   echo "e2b-mtp1=$BASE -ub 512 -ctk f16 -ctv f16 $DRAFT --spec-draft-n-max 1"
@@ -121,7 +127,8 @@ CFG="$OUT/configs.txt"
     echo "q9-mtplx-d1=$MX --depth 1"
     if chip_lacks_bf16; then
       # M1/M2: the BF16 pack against the local FP16 copy the engine now serves.
-      mlx_ensure_fp16_pack "$Q9_DIR"
+      # (Built before this block - see below - so its progress lines cannot
+      # land in the config file.)
       if [[ -d "$Q9_DIR.fp16" ]]; then
         MXF="$(printf '%s' "$MX" | sed "s#--model $Q9_DIR #--model $Q9_DIR.fp16 #")"
         echo "q9-fp16-d1=$MXF --depth 1"

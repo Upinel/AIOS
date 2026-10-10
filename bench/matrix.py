@@ -138,8 +138,14 @@ def main():
     lines = list(a.config)
     if a.configs_file:
         lines += [l.strip() for l in open(a.configs_file) if l.strip() and not l.lstrip().startswith("#")]
+    import re
     for line in lines:
         name, _, cmd = line.partition("=")
+        # A config is name=command with a plain name. Anything else is noise
+        # that got into the file - skip it loudly rather than try to run it.
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", name.strip()) or not cmd.strip():
+            print(f"  skipping a line that is not name=command: {line[:70]!r}")
+            continue
         cfgs.append((name.strip(), cmd.strip().replace("{port}", str(a.port))))
     if not cfgs:
         ap.error("no configs")
