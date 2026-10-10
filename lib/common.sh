@@ -371,7 +371,7 @@ QUOTED = {"MODEL", "KV_QUANT", "PROFILE", "THINKING", "MODEL_QUANT",
           # everything around it in env.conf is quoted. Same value either way,
           # but it made the file look hand-edited when it was not.
           "EXPERT_PROFILE", "AGENT_ROUTER", "CACHE_RAM_MB", "UBATCH_SIZE",
-          "MTPLX_BIN", "BACKEND_PORT"}
+          "MTPLX_BIN", "BACKEND_PORT", "MLX_FP16_PACK"}
 src = open(path, encoding="utf-8").read()
 val = f'"{value}"' if key in QUOTED and not value.startswith('"') else value
 new, n = re.subn(rf'^{re.escape(key)}=.*$', f'{key}={val}', src, count=1, flags=re.M)
@@ -430,6 +430,7 @@ load_config() {
   AGENT_ROUTER="auto"
   BACKEND_PORT=""
   MTPLX_BIN=""
+  MLX_FP16_PACK="auto"
   LOG_FILE="$REPO_DIR/run/server.log"
   # How long the interactive pickers wait before taking the default. Thirty
   # seconds, not five: five is not enough to read a menu of eleven models, let
@@ -890,6 +891,15 @@ detected_chip() {
   sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon"
 }
 
+# M1 and M2 GPUs have no native bfloat16; M3 and later do. An MLX pack that
+# stores its scales and norms in BF16 runs them emulated there, which is why
+# MTPLX ships FP16 builds for M1/M2 and why the MLX engine prefers a local
+# .fp16 copy on them (lib/make-fp16-pack.py).
+chip_lacks_bf16() {
+  case "$(chip_family)" in M1|M2) return 0 ;; esac
+  return 1
+}
+
 # "M1", "M4", "M5" - the family alone, or empty when it cannot be told.
 chip_family() {
   detected_chip | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^M[0-9]+$/) { print $i; exit } }'
@@ -970,6 +980,9 @@ model_dirs_on_disk() {
   for dir in "$MODELS_DIR"/*/; do
     [[ -d "$dir" ]] || continue
     dir="${dir%/}"
+    # A local FP16 copy of an MLX pack (lib/make-fp16-pack.py) is the same
+    # model, not another one to offer.
+    case "$dir" in *.fp16|*.fp16.partial) continue ;; esac
     eng="$(engine_for_dir "$dir")"
     [[ -n "$eng" ]] || continue
     printf '%s\n' "$dir"
@@ -2016,8 +2029,11 @@ model_default_depth() {
     *gemma-4-26B-A4B*|*Gemma4-26B-A4B*) echo 3 ;;
     *Qwen3.6-35B-A3B*MTPLX*)            echo 1 ;;
     *Qwen3.6-35B-A3B*GGUF*)             echo 2 ;;
-    # MTPLX 2.12.2, M5 Pro: depth 2 70.7 t/s on code, 1 60.4, 3 54.1.
-    *Qwen3.8-9B*MTPLX*)                 echo 2 ;;
+    # MTPLX 2.12.2, plain code at temp 0.6. Chip-dependent, so measured on
+    # both: M5 Pro depth 2 70.7 t/s (1: 60.4, 3: 54.1); M1 16 GB depth 1
+    # 13.6 t/s (2: 12.2, 3: 10.6). MTPLX's own tuner lands on 1 on an M4 mini.
+    *Qwen3.8-9B*MTPLX*)
+      if chip_has_neural_accelerator; then echo 2; else echo 1; fi ;;
     *)                                   echo 3 ;;
   esac
 }

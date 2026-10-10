@@ -298,6 +298,21 @@ recommend_config() {
     while (( c * 2 <= fit && c * 2 <= cap )); do c=$(( c * 2 )); done
     (( c > REC_CONTEXT_SIZED )) && REC_CONTEXT_SIZED="$c"
   fi
+  # q8 is not the safe small-Mac choice it looks like. Measured on an M1 16 GB
+  # (Gemma 4 E2B, MTP depth 2, b11541): q8 KV decoded code at 25.6 t/s against
+  # 38.7 with f16 - the dequantisation costs more than the bandwidth it saves,
+  # the same result as on the M5. So where q8 was picked for room, take f16
+  # whenever it still leaves a 32k window.
+  if [[ "$REC_KV" == q8* ]] && (( spare_kb > 0 )); then
+    local f16_kb; f16_kb="$(kv_kb_per_token_f16 "$REC_MODEL")"
+    if (( f16_kb > 0 )); then
+      local f16_fit=$(( spare_kb * 3 / 4 / f16_kb )) f16_c=8192
+      while (( f16_c * 2 <= f16_fit && f16_c * 2 <= cap )); do f16_c=$(( f16_c * 2 )); done
+      if (( f16_c >= 32768 )); then
+        REC_KV="f16"; kv_kb="$f16_kb"; REC_CONTEXT_SIZED="$f16_c"
+      fi
+    fi
+  fi
   if (( REC_CONTEXT_SIZED > REC_CONTEXT )); then
     REC_KV_GB=$(( REC_CONTEXT_SIZED * kv_kb / 1024 / 1024 ))
     REC_NEED_GB=$(( REC_WEIGHTS_GB + REC_KV_GB + 6 ))

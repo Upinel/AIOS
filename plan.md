@@ -13,10 +13,10 @@
 | Phase 4 shared KV, cache-ram tiers, ubatch auto | **done** | `-ub 2048` on M5: −9% cold TTFT |
 | Phase 4 prefix snapshots / restart warm / subagents | **done** — `lib/agent-router.py` | 4 subagents 35.6 → 2.3 s; first turn after restart 16.2 → 0.48 s |
 | Phase 5 per-tier KV, load mode, memory-sized context, 16 GB lineup | **done** | context sized from each model's KV cost |
-| Phase 5 per-chip pack selection (FP16 vs BF16 MLX packs) | **pending** | needs the M1 run |
+| Phase 5 per-chip pack selection (FP16 vs BF16 MLX packs) | **done** — `lib/make-fp16-pack.py`, served automatically on M1/M2 | M1 speed-up to be confirmed by a second M1 run |
 | Phase 6 agent profile v2 | **done** | Hermes wiring skipped, as agreed |
 | Phase 7 tuning invalidation, offline router test, docs | **done** | 442/444 offline checks pass; the 2 left compare against the last commit and pass once committed |
-| Small-Mac validation | **waiting on you** | run `./bench/small-mac-check.sh` on the M1 16 GB |
+| Small-Mac validation | **done (M1 16 GB)** | E2B depth 3 +65%; router 112.8 → 4.2 s; q8 KV −34% → installer keeps f16; 9B depth 1 off-M5 |
 
 Measurements: [docs/PERF-AGENTS.md](docs/PERF-AGENTS.md).
 

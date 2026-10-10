@@ -157,3 +157,10 @@ rm -f "$DEST/.expected.tsv" "$DEST/.manifest.json"
 
 DU="$(du -sh "$DEST" | cut -f1)"
 ok "Model ready at $DEST  ($DU)"
+
+# M1/M2 have no native bfloat16: build the FP16 copy now rather than on the
+# first start, so the first start is not the slow one.
+if [[ -f "$LIB_DIR/engines/mlx.sh" ]]; then
+  source "$LIB_DIR/engines/mlx.sh"
+  mlx_ensure_fp16_pack "$DEST" || true
+fi

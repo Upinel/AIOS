@@ -44,6 +44,35 @@ engine_present() {
   [[ -x "$(mtplx_bin)" ]] || command -v mtplx >/dev/null 2>&1
 }
 
+# The Python inside the mtplx install, which has MLX. Homebrew's wrapper names
+# its venv on a VENV= line; the app's wrapper execs the venv's mtplx directly.
+mtplx_python() {
+  local bin w venv py
+  bin="$(mtplx_bin)"
+  [[ -f "$bin" ]] || return 0
+  w="$(head -c 4096 "$bin" 2>/dev/null || true)"
+  venv="$(printf '%s\n' "$w" | sed -n 's/^VENV="\${MTPLX_BREW_VENV:-\(.*\)}"$/\1/p' | head -1)"
+  if [[ -n "$venv" && -x "$venv/bin/python" ]]; then printf '%s\n' "$venv/bin/python"; return 0; fi
+  py="$(printf '%s\n' "$w" | sed -n "s/^exec '\(.*\)\/mtplx' .*/\1/p" | head -1)"
+  if [[ -n "$py" && -x "$py/python" ]]; then printf '%s\n' "$py/python"; return 0; fi
+  py="$(dirname "$bin")/python"
+  [[ -x "$py" ]] && printf '%s\n' "$py"
+  return 0
+}
+
+# On M1/M2, build an FP16 copy of a BF16 pack once, next to it. Measured on an
+# M1 16 GB with the BF16 9B: 98 s to first token on an 8k prefix and ~13 t/s.
+mlx_ensure_fp16_pack() {
+  local dir="$1" py
+  [[ "${MLX_FP16_PACK:-auto}" != "off" ]] || return 0
+  chip_lacks_bf16 || return 0
+  [[ -d "$dir.fp16" ]] && return 0
+  py="$(mtplx_python)"
+  [[ -n "$py" ]] || { warn "No MLX Python found; cannot build the FP16 pack for $(chip_family)."; return 0; }
+  info "$(chip_family) has no native bfloat16 - building an FP16 copy of this pack (one time)..."
+  "$py" "$REPO_DIR/lib/make-fp16-pack.py" "$dir" || warn "FP16 pack build failed; serving the BF16 pack."
+}
+
 engine_name() { echo "MLX / MTPLX"; }
 
 engine_version() {
@@ -180,6 +209,13 @@ engine_build_args() {
 
   [[ -d "$dir" ]] || die "No MTPLX model found at $dir"
 
+  # M1/M2: serve the FP16 copy of a BF16 pack (built here once if missing).
+  ENGINE_FP16=0
+  if chip_lacks_bf16 && [[ "${MLX_FP16_PACK:-auto}" != "off" ]]; then
+    mlx_ensure_fp16_pack "$dir"
+    if [[ -d "$dir.fp16" ]]; then dir="$dir.fp16"; ENGINE_FP16=1; fi
+  fi
+
   EFFECTIVE_DEPTH="$(effective_depth)"
   THINKING_ARGS="$(thinking_flags)"
 
@@ -256,6 +292,7 @@ engine_export_env() {
 engine_banner() {
   local _prof; _prof="$(mlx_profile_for "${MODEL_DIR:-}")"
   log "  MTP depth    ${ENGINE_DEPTH:-auto}              (profile: ${_prof:-$PROFILE})"
+  (( ${ENGINE_FP16:-0} )) && log "  weights      FP16 copy of the pack ($(chip_family) has no native bfloat16)"
   log "  thinking     $THINKING  (history: $PRESERVE_THINKING)"
   if (( ${SESSION_BANK_GB:-0} > 0 )); then
     log "  session bank ${SESSION_BANK_GB} GB   (prefix cache for repeat turns)"

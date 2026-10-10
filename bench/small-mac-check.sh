@@ -13,6 +13,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Measure the small-Mac defaults on a small Mac.
 #
+#   ./bench/small-mac-check.sh --router-only   just the subagent/router part
+#
 #   ./bench/small-mac-check.sh            run everything (about 40-60 minutes)
 #   ./bench/small-mac-check.sh --quick    one round instead of two
 #
@@ -117,8 +119,18 @@ CFG="$OUT/configs.txt"
 --stream-interval 1 --ssd-session-cache off --warmup-tokens 8 --model-id Upinel-AIOS \
 --no-stats-footer --preserve-thinking scoped --reasoning off"
     echo "q9-mtplx-d1=$MX --depth 1"
-    echo "q9-mtplx-d2=$MX --depth 2"
-    echo "q9-mtplx-d3=$MX --depth 3"
+    if chip_lacks_bf16; then
+      # M1/M2: the BF16 pack against the local FP16 copy the engine now serves.
+      mlx_ensure_fp16_pack "$Q9_DIR"
+      if [[ -d "$Q9_DIR.fp16" ]]; then
+        MXF="$(printf '%s' "$MX" | sed "s#--model $Q9_DIR #--model $Q9_DIR.fp16 #")"
+        echo "q9-fp16-d1=$MXF --depth 1"
+        echo "q9-fp16-d2=$MXF --depth 2"
+      fi
+    else
+      echo "q9-mtplx-d2=$MX --depth 2"
+      echo "q9-mtplx-d3=$MX --depth 3"
+    fi
   fi
 } > "$CFG"
 

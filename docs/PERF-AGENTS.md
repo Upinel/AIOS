@@ -186,6 +186,43 @@ The E2B's new draft is worth 44% on code decode. The 9B defaults to depth 2.
 These are M5 numbers; the same script on an M1 16 GB decides the small-Mac
 defaults.
 
+### On an M1 with 16 GB (the small-Mac floor)
+
+`./bench/small-mac-check.sh`, M1 8-core GPU, 16 GB, macOS 26.6.1, llama.cpp
+b11541, MTPLX 2.12.2, 8k prefix, 64k window, best of 2:
+
+| config | total | cold TTFT | code decode |
+|---|---:|---:|---:|
+| E2B, no draft | 250.8 s | 34.4 s | 26.2 t/s |
+| E2B + MTP, depth 1 | 230.7 s | 36.3 s | 33.0 t/s |
+| E2B + MTP, depth 2 | 218.4 s | 34.9 s | 38.7 t/s |
+| **E2B + MTP, depth 3** | **212.8 s** | 35.0 s | **43.2 t/s** |
+| E2B, depth 2, `-ub 1024` | 244.9 s | 36.5 s | 32.0 t/s |
+| E2B, depth 2, **q8 KV** | 253.6 s | 35.6 s | **25.6 t/s** |
+| Qwen 9B MTPLX (BF16 pack), depth 1 | 299.4 s | 98.4 s | 13.6 t/s |
+| Qwen 9B MTPLX (BF16 pack), depth 2 | 328.2 s | 97.5 s | 12.2 t/s |
+| Qwen 9B MTPLX (BF16 pack), depth 3 | 278.4 s | 106.3 s | 10.6 t/s |
+
+Prefix router, same Mac, four subagents at once: **112.8 s → 4.24 s**.
+
+What it decided:
+
+- **E2B depth 3** holds on M1 too (+65% code decode over no draft) — already
+  the default.
+- **`-ub 512` stays the default off-M5**; 1024 was slower on every column.
+- **q8 KV was 34% slower than f16** on the M1, as on the M5. The installer now
+  keeps f16 on 16-24 GB Macs whenever that still leaves a 32k window (it
+  does for the 12B and the E2B), instead of switching to q8 below 30 GB.
+- **The 9B prefers depth 1 off-M5** (depth 2 on M5): the default is now
+  chip-dependent.
+- **The 9B pack stores its scales and norms in BF16**, which M1 and M2 run
+  emulated. No FP16 build of an uncensored 9B exists on Hugging Face, so
+  [`lib/make-fp16-pack.py`](../lib/make-fp16-pack.py) builds one locally
+  (692 tensors cast, none out of FP16 range, 4 s), and the MLX engine serves
+  `<pack>.fp16` on M1/M2 automatically. On the M5 the FP16 copy decodes the
+  same (84.7 against 82.8 t/s); its M1 effect is the next run of
+  `./bench/small-mac-check.sh`.
+
 ## 4. Subagents and restarts: the prefix router
 
 On llama.cpp a prefix is reused only from the slot holding it. Hermes runs
@@ -245,6 +282,5 @@ llama.cpp-only. `AGENT_ROUTER=off` removes it.
 
 ## Still to measure
 
-- **M1 / 16 GB**: E2B draft depth, `-ub`, f16 vs q8, the router, MTPLX 9B.
-  Run `./bench/small-mac-check.sh` there and send back
-  `run/small-mac-report/report.txt`.
+- **M1 / 16 GB, second run**: the FP16 9B pack against the BF16 one
+  (`./bench/small-mac-check.sh` now includes it on M1/M2).
