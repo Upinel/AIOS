@@ -54,6 +54,7 @@ CONTRACT = [
     "engine_export_env",
     "engine_apply_settings",
     "engine_banner",
+    "engine_router_command",
     "engine_binary",
     "engine_tunable",
     "engine_serve_word",

@@ -161,6 +161,7 @@ fi
 # Applied before the banner, so the banner reports what will actually start.
 apply_expert_profile
 [[ -n "${MANUAL_VALUES:-}" ]] && apply_set_overrides "$MANUAL_VALUES"
+finalize_runtime_settings
 
 # Now that the profile has had its say about MTP_DEPTH.
 EFFECTIVE_DEPTH="$(effective_depth 2>/dev/null || echo 3)"

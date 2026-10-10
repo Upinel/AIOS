@@ -57,6 +57,17 @@ if pid_alive; then
   STOPPED=1
 fi
 
+# 1b. The prefix router in front of it, if one was started.
+if router_alive; then
+  RPID="$(cat "$ROUTER_PID_FILE")"
+  kill -TERM "$RPID" 2>/dev/null || true
+  for _ in $(seq 1 10); do kill -0 "$RPID" 2>/dev/null || break; sleep 0.5; done
+  kill -9 "$RPID" 2>/dev/null || true
+  ok "Stopped the prefix router."
+  STOPPED=1
+fi
+rm -f "$ROUTER_PID_FILE"
+
 # 2. Anything else holding the port - an MTPLX daemon started by hand or by
 #    the menu-bar app, or a llama-server someone launched themselves.
 for P in $(port_pids); do

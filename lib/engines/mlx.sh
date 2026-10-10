@@ -18,15 +18,37 @@
 # does not care which one it is talking to.
 
 # ── presence ─────────────────────────────────────────────────────────────────
+# Which mtplx to run. Not simply the first one on PATH: the MTPLX Mac app puts
+# its own runtime in ~/.mtplx/bin, ahead of Homebrew, and it updates on its own
+# schedule. On the reference machine that shadowed a Homebrew 2.11.2 with an
+# app runtime still on 2.9.1, so every "MTPLX" number was a 2.9.1 number.
+# MTPLX_BIN in env.conf pins one explicitly; otherwise the newest wins.
+mtplx_bin() {
+  if [[ -n "${MTPLX_BIN:-}" ]]; then printf '%s\n' "$MTPLX_BIN"; return 0; fi
+  if [[ -n "${_MTPLX_BIN_CACHE:-}" ]]; then printf '%s\n' "$_MTPLX_BIN_CACHE"; return 0; fi
+  local c best="" bestv="" v
+  for c in "$(command -v mtplx 2>/dev/null)" /opt/homebrew/bin/mtplx /usr/local/bin/mtplx \
+           "$HOME/.mtplx/bin/mtplx"; do
+    [[ -n "$c" && -x "$c" ]] || continue
+    v="$("$c" --version 2>/dev/null | awk 'NR==1{print $2}')"
+    [[ -n "$v" ]] || continue
+    if [[ -z "$bestv" ]] || [[ "$(printf '%s\n%s\n' "$bestv" "$v" | sort -V | tail -1)" == "$v" && "$v" != "$bestv" ]]; then
+      best="$c"; bestv="$v"
+    fi
+  done
+  _MTPLX_BIN_CACHE="${best:-mtplx}"
+  printf '%s\n' "$_MTPLX_BIN_CACHE"
+}
+
 engine_present() {
-  command -v mtplx >/dev/null 2>&1
+  [[ -x "$(mtplx_bin)" ]] || command -v mtplx >/dev/null 2>&1
 }
 
 engine_name() { echo "MLX / MTPLX"; }
 
 engine_version() {
   # mtplx prints its version to stdout, unlike llama-server which uses stderr.
-  mtplx --version 2>/dev/null | head -1
+  "$(mtplx_bin)" --version 2>/dev/null | head -1
 }
 
 engine_install_hint() {
@@ -36,6 +58,15 @@ engine_install_hint() {
 # Install the runtime. Idempotent, and it bootstraps MTPLX's own Python
 # runtime on first use, which takes a few minutes.
 engine_install() {
+  if command -v brew >/dev/null 2>&1 && brew list --versions mtplx >/dev/null 2>&1; then
+    # Installed, but possibly behind: 2.10-2.12 fixed long-context decode, the
+    # agent tool-turn re-prefill and the memory guard on 8-32 GB Macs.
+    info "brew upgrade youssofal/mtplx/mtplx"
+    brew upgrade youssofal/mtplx/mtplx >/dev/null 2>&1 || true
+    _MTPLX_BIN_CACHE=""
+    ok "mtplx: $(engine_version)"
+    return 0
+  fi
   if command -v mtplx >/dev/null 2>&1; then
     ok "mtplx already installed: $(engine_version)"
     return 0
@@ -44,7 +75,8 @@ engine_install() {
   info "brew install youssofal/mtplx/mtplx"
   brew install youssofal/mtplx/mtplx || die "brew install mtplx failed."
   info "Bootstrapping the MTPLX Python runtime (first run only, a few minutes)..."
-  mtplx --version >/dev/null 2>&1 || true
+  _MTPLX_BIN_CACHE=""
+  "$(mtplx_bin)" --version >/dev/null 2>&1 || true
   ok "MTPLX ready: $(engine_version)"
 }
 
@@ -266,5 +298,10 @@ engine_apply_settings() {
   esac
 }
 
-engine_binary() { echo "mtplx"; }
+engine_binary() { mtplx_bin; }
+
+# MTPLX shares a prefix across concurrent sessions itself (its session bank
+# restored a 17k-token tool prefix into all four sibling requests measured
+# here), so the llama.cpp prefix router has nothing to add.
+engine_router_command() { :; }
 engine_serve_word() { echo "serve"; }

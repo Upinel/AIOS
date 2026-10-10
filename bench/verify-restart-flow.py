@@ -324,8 +324,12 @@ def _run():
     print("\n  picker rendering\n")
     check("long repo names are truncated, not overrunning the column",
           bool(re.search(r"^\s*\d+\s+GGUF\s+\S{1,20}\s+\d+ GB", listing, re.M)), True)
+    # Only meaningful when models/ holds something unshipped; otherwise every
+    # row must carry an alias, which is the same rule seen from the other side.
+    rows = re.findall(r"^\s*\d+\s+(?:GGUF|MLX)\s+(\S+)", listing, re.M)
     check("a model we do not ship is labelled as such",
-          "not one we ship" in listing, True)
+          "not one we ship" in listing
+          or (bool(rows) and all(r.startswith(("gguf-", "mlx-")) for r in rows)), True)
 
     if stop_if_we_started_it(before):
         print("  (stopped a server this test started)")

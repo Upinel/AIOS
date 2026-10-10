@@ -51,8 +51,9 @@ EXPERT_PROFILE="$2"
 # Start from deliberately wrong values so anything the profile sets shows up,
 # and anything it leaves alone is visibly left alone.
 KV_QUANT="q4_0"; MTP_DEPTH="9"; THINKING="high"; MAX_RESPONSE_TOKENS=128
-PARALLEL_SLOTS=9; MAX_CONCURRENT=9; PREFILL_CHUNK_TOKENS=99999
+PARALLEL_SLOTS=9; MAX_CONCURRENT=9; SESSIONS=""; PREFILL_CHUNK_TOKENS=99999
 apply_expert_profile
+finalize_runtime_settings 2>/dev/null
 echo "rc=0"
 echo "kv=$KV_QUANT"
 echo "depth=$MTP_DEPTH"
@@ -203,8 +204,12 @@ def main():
     # because deeper drafting has more context to verify on every cycle.
     check("speed defers depth to the per-model tuner", speed["depth"], "auto")
     check("writer pins a shallow depth", writer["depth"], "1")
-    check("f16 KV in all three, since it won at every context measured",
-          {speed["kv"], agent["kv"], writer["kv"]}, {"f16"})
+    # Profiles leave the KV type alone: f16 is the shipped default, and the
+    # installer picks q8 on a 16-24 GB Mac where the gigabyte decides whether
+    # the model fits. A profile overriding that undid the one choice made for
+    # this machine, so the deliberately-wrong starting value must survive.
+    check("profiles leave KV_QUANT to env.conf and the installer",
+          {speed["kv"], agent["kv"], writer["kv"]}, {"q4_0"})
 
     # 4. And the launch commands really differ, which is the thing a user sees.
     print("\n  the launch commands differ\n")
@@ -321,7 +326,7 @@ for v in 511 512 32768 32769 nope; do show manual_ok_reply "$v"; done
         env_copy = os.path.join(td, "env.conf")
         src = open(os.path.join(REPO, "env.conf"), encoding="utf-8").read()
         for k, v in (("THINKING", '"medium"'), ("CONTEXT_WINDOW", "32768"),
-                     ("PARALLEL_SLOTS", "2"), ("MAX_CONCURRENT", "2"),
+                     ("SESSIONS", "2"),
                      ("MAX_RESPONSE_TOKENS", "2048")):
             src = re.sub(rf"^{k}=.*$", f"{k}={v}", src, count=1, flags=re.M)
         with open(env_copy, "w", encoding="utf-8") as fh:
@@ -362,9 +367,8 @@ for v in 511 512 32768 32769 nope; do show manual_ok_reply "$v"; done
         out = manual_shim(env_copy, "high\n65536\n4\n8192\ny\n", forced=True)
         check("keep=yes writes the answers to env.conf",
               [env_value(env_copy, k) for k in
-               ("THINKING", "CONTEXT_WINDOW", "PARALLEL_SLOTS", "MAX_CONCURRENT",
-                "MAX_RESPONSE_TOKENS")],
-              ["high", "65536", "4", "4", "8192"])
+               ("THINKING", "CONTEXT_WINDOW", "SESSIONS", "MAX_RESPONSE_TOKENS")],
+              ["high", "65536", "4", "8192"])
         check("and the file still loads as config",
               subprocess.run(
                   ["bash", "-c",

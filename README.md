@@ -60,7 +60,7 @@ depends on what you are doing today.
 | | for | what it changes |
 |---|---|---|
 | **Max t/s** | one client, fastest possible replies | tuned MTP depth, f16 KV, thinking bounded, one session holding the whole GPU |
-| **Max Agentic AI** | a loop of tool calls | thinking **off** so a modest `max_tokens` cannot truncate a call, 4 concurrent sessions, prefix cache kept on disk, room for a full tool call |
+| **Max Agentic AI** | a loop of tool calls | thinking **off** so a modest `max_tokens` cannot truncate a call, 4 sessions sharing **one** context window, the agent's tool prefix snapshotted so subagents and restarts skip re-prefilling it, room for a full tool call |
 | **Max Long Writer** | novels, long documents | shallower drafting (depth 1) so there is less to verify per cycle as the window fills, thinking off, 8192-token replies, one client |
 | **Set by hand** | one odd run — a huge context, a few extra sessions | asks for thinking, context, concurrent sessions and the reply cap, then applies them to **that start only** |
 
@@ -416,6 +416,27 @@ improved by a third or more, so expect better than this.
 
 ### What tuning actually bought
 
+> **October 2026 performance pass** — measured on a replay of a real
+> Hermes-style agent session (17k-token tool prefix, tool turns, a file write,
+> four parallel subagents, a compaction). Full tables:
+> [docs/PERF-AGENTS.md](docs/PERF-AGENTS.md).
+>
+> | change | before | after |
+> |---|---:|---:|
+> | llama.cpp b10809 → pinned **b11541** (Gemma 26B, whole session) | 42.0 s | **34.7 s** |
+> | MTPLX 2.9.1 → **2.12.2** (Qwen 3.6 35B-A3B, whole session) | 49.9 s | **32.6 s** |
+> | MTPLX 2.9.1 → **2.12.2** (Qwen 3.8 27B, whole session) | 234.7 s | **117.9 s** |
+> | MTPLX 2.9.1 → **2.12.2** (35B, file-write decode at 18k context) | 21 t/s | **70 t/s** |
+> | MTP depth 2 → **3** on the new runtime (Gemma 26B, file-write decode) | 69 t/s | **80 t/s** |
+> | four subagents sharing the tool prefix (Gemma 26B, **prefix router**) | 35.6 s | **2.3 s** |
+> | first turn after a restart (Gemma 26B, prefix restored from disk) | 10.1 s | **0.24 s** |
+> | context per session in the agent profile (4 sessions, 128k window) | 32k | **128k** |
+>
+> Rejected on data: DFlash/DFlash2 block drafters, which accept only 9-60% of
+> drafts against these uncensored fine-tunes (the published drafters were
+> trained on the aligned bases), and llama.cpp for the dense Qwen 27B, which
+> MTPLX 2.12 still beats by about 3x.
+
 Measured on the two target models, before and after, at 8k context. Each figure
 is the best of several runs, engines interleaved so thermal drift hits every
 config equally.
@@ -498,7 +519,7 @@ row marked with a verdict for *your* memory:
     2  gguf-g-12b        8 GB   fits comfortably     dense 12B - smaller and less capable, still quick
     3  gguf-g-31b        20 GB  fits comfortably     dense 31B abliterated - the highest quality
     ...
-    6  gguf-q-27b        19 GB  fits comfortably     dense 27B, ~13.5 t/s; its MTP head needs a build step
+    6  gguf-q-27b        19 GB  fits comfortably     dense 27B with a DFlash2 drafter, ~41 t/s on code
     7  gguf-q-9b         6 GB   fits comfortably     dense 9B, ~44 t/s - the MLX build is about twice this
     ...
     9  mlx-q-35ba3b      22 GB  fits comfortably     35B MoE, ~3B active - fastest here (141 t/s)
@@ -533,7 +554,7 @@ something that will not fit is allowed; it warns, then does what you asked.
 |---|---:|---|
 | `gguf-q-27b` | 19 GB | `HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF` |
 | `gguf-q-9b` | 6 GB | `mradermacher/Qwen3.8-9B-heretic-uncensored-i1-GGUF` |
-| `gguf-q-35ba3b` | 22 GB | `HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive` |
+| `gguf-q-35ba3b` | 22 GB | `llmfan46/Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-GGUF` — keeps the native MTP head, ~105 t/s on code through llama.cpp |
 
 **Two things to know before you pick Qwen here.**
 
@@ -793,6 +814,15 @@ turns — on routine turns `off` is 16 tokens against 58.
 
 ### Keep the prompt prefix stable
 
+> **Subagents and restarts are handled for you on llama.cpp.** A small router
+> (`lib/agent-router.py`) sits on the port and keeps the agent's system prompt +
+> tools as a KV snapshot on disk. A `delegate_task` child or the first turn
+> after `./restart.sh` gets that state restored into its slot instead of
+> re-prefilling it — 35.6 s → 2.3 s for four children at 17k tokens, with
+> output identical to a cold prefill. `AGENT_ROUTER=off` turns it off. MTPLX
+> shares prefixes across sessions natively. What the router cannot fix is a
+> harness that *rewrites* its history, below.
+
 KV reuse is what makes multi-turn agents cheap, and it only works if the
 prompt **only ever grows**. Measured at 8k of history:
 
@@ -886,6 +916,7 @@ See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 | [docs/RESEARCH-MLX-STACK.md](docs/RESEARCH-MLX-STACK.md) | the MTPLX/MLX measurements this project's MLX defaults come from |
 | [docs/RESEARCH-LLAMACPP-MTP.md](docs/RESEARCH-LLAMACPP-MTP.md) | the llama.cpp MTP work, and why the patched runtime exists |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | the original survey that started this |
+| [docs/PERF-AGENTS.md](docs/PERF-AGENTS.md) | the October 2026 agent-performance pass: runtime upgrades, the speculative-decoding bake-off, the prefix router, every measurement |
 
 ---
 
@@ -911,8 +942,9 @@ and the 32k figure are in the notes column.
 | `gguf-g-e4b` &nbsp;Gemma 4 E4B | 63.9 t/s `*` | 84 t/s | 0.4 s | Only when the Mac genuinely cannot fit `gguf-g-26ba4b`. |
 | `gguf-g-12b` &nbsp;Gemma 4 12B | 54.5 t/s `*` | 81 t/s | 2.6 s | The largest model that still fits a **16 GB** Mac. `gguf-g-e2b` is nearly twice as fast, so pick it for capability, not speed. |
 | `gguf-q-9b` &nbsp;Qwen 3.8 9B | 44.3 t/s `*` | 130 t/s | 4.1 s | Use the **MLX** build instead — `mlx-q-9b` is about twice this. |
-| `gguf-q-27b` &nbsp;Qwen 3.8 27B | 13.5 t/s `*` | 133 t/s | 9.1 s | Use the **MLX** build instead — ~2.2× faster there. |
+| `gguf-q-27b` &nbsp;Qwen 3.8 27B | 40.8 t/s `‡` | 246 t/s | — | With its **DFlash2** drafter, no patched runtime needed — 4× its old figure on code. For agent loops the **MLX** build is still ~28% faster (its prefill is quicker). |
 
+`‡` llama.cpp b11541, plain code generation at temperature 0.6, block 16; prefill on a 17k-token agent prefix.
 `*` measured before the KV and depth changes, on a short prompt. Those rows have
 not been re-measured, so treat them as a floor: the two that *were* re-measured
 both improved, one by 59%.
@@ -1065,6 +1097,9 @@ work here:
 | `--cache-reuse 64` / `256` | **slower** — 12.11 s / 14.54 s against 9.40 s, with no extra reuse |
 | deeper MTP (depth 4) | no better than 3, more memory |
 | ngram speculation | slower than plain autoregressive |
+| DFlash block drafter, Gemma 26B (z-lab, block 8 / 16) | **slower** — 9-16% acceptance against the heretic fine-tune; 41 / 55 s against 29 s for MTP depth 3 |
+| DFlash2 block drafter, Qwen 27B on llama.cpp | ~50-60% acceptance; 342-365 s for the session against 118 s on MTPLX |
+| MTP + ngram stacked (`--spec-type draft-mtp,ngram-mod`) | neutral (29.0 s against 29.4 s) |
 
 The batch-size result is the useful one: at 32k, prefill sits at ~420 t/s no
 matter how the batches are arranged, so that cost is architectural — five of
@@ -1233,8 +1268,10 @@ cover them, and it covers no model weights at all.
 
 No, and the reasoning is worth stating rather than asserting:
 
-- **Nothing third-party is redistributed here.** `install.sh` runs
-  `brew install`, and the runtime is started as a separate process and spoken to
+- **Nothing third-party is redistributed here.** `install.sh` downloads
+  llama.cpp's own release archive from its GitHub releases (pinned, checksum
+  verified) or runs `brew install`, and the runtime is started as a separate
+  process and spoken to
   over HTTP. MIT and Apache-2.0 impose obligations when you distribute their
   code; nothing is vendored, so nothing of theirs is relicensed, and their
   notices stay with them.

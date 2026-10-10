@@ -61,6 +61,7 @@ MODELS = [
       "barozp/Qwen3.8-27B-Uncensored-MTPLX-4bit"], 64),
     ("Qwen3.6-35B-A3B",
      ["HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive",
+      "llmfan46/Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-GGUF",
       "hawhyhb/Qwen3.6-35B-A3B-Uncensored-Heretic-MTPLX-4bit-FP16"], 20),
     ("Gemma-4-26B-A4B",
      ["OS-Software/gemma-4-26B-A4B-it-qat-q4_0-heretic-ja-GGUF"], 20),
@@ -181,7 +182,9 @@ def gguf_path_for(repo):
         return None
     for root, _, files in os.walk(d):
         for f in sorted(files):
-            if f.endswith(".gguf") and not f.startswith("mmproj"):
+            low = f.lower()
+            if f.endswith(".gguf") and not low.startswith("mmproj") \
+                    and not low.startswith("mtp-") and not any(t in low for t in ("dflash", "draft", "fastmtp")):
                 return os.path.join(root, f)
     return None
 

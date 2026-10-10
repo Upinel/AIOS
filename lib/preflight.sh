@@ -201,7 +201,12 @@ recommend_config() {
   # Same weights, but Q4_0 QAT decodes ~47% faster on Metal (106.4 vs 72.5
   # t/s measured) and is 15% smaller. Recommending the K-quant here would hand
   # a fresh install a slower model than the one start.sh defaults to.
-  if (( ram >= 48 )); then
+  # 30, not 48: a 32 GB Mac runs the 26B at ~19 GB resident with a 32k window
+  # and room to spare, and this table used to hand it the 12B - while the
+  # engine menu a few lines later offered the 26B to the same Mac as "fits
+  # comfortably". 24 GB stays on the 12B: macOS caps GPU-wired memory near
+  # two-thirds of RAM by default, which is too close to the 26B's working set.
+  if (( ram >= 30 )); then
     REC_MODEL="$(model_repo_for gguf-g-26ba4b)"
     REC_WEIGHTS_GB=15
     REC_REASON_MODEL="26B-A4B Q4_0 QAT is the quality pick: MoE, ~4B active per token, uncensored, and the fastest thing that runs here"
@@ -272,6 +277,32 @@ recommend_config() {
   esac
   REC_KV_GB=$(( REC_CONTEXT * kv_kb / 1024 / 1024 ))
   REC_NEED_GB=$(( REC_WEIGHTS_GB + REC_KV_GB + 6 ))
+
+  # The window actually written to env.conf: as large as this model's own KV
+  # cost allows inside the memory cap, never below the tier value above.
+  #
+  # The tier value was one number per RAM size for every model, and with the
+  # agent profile's four sessions sharing one pool it ran out: on a 16 GB Mac
+  # four subagents with an 8k tool prefix each need ~34k, and the flat 16k
+  # failed with "Context size has been exceeded" (measured, Gemma 4 E2B).
+  # These models are hybrid or sliding-window and cache little per token -
+  # 64k on the E2B is ~0.45 GB at q8 - so the window the memory can actually
+  # hold is several times the flat number. REC_CONTEXT itself stays the tier
+  # value: the engine menu's fit check reads it, and must not get stricter.
+  local spare_kb=$(( (REC_MEMORY_LIMIT_GB - REC_WEIGHTS_GB - 3) * 1024 * 1024 ))
+  local cap=131072
+  (( ram >= 96 )) && cap=262144
+  REC_CONTEXT_SIZED="$REC_CONTEXT"
+  if (( spare_kb > 0 && kv_kb > 0 )); then
+    local fit=$(( spare_kb * 3 / 4 / kv_kb )) c=8192   # a quarter kept back
+    while (( c * 2 <= fit && c * 2 <= cap )); do c=$(( c * 2 )); done
+    (( c > REC_CONTEXT_SIZED )) && REC_CONTEXT_SIZED="$c"
+  fi
+  if (( REC_CONTEXT_SIZED > REC_CONTEXT )); then
+    REC_KV_GB=$(( REC_CONTEXT_SIZED * kv_kb / 1024 / 1024 ))
+    REC_NEED_GB=$(( REC_WEIGHTS_GB + REC_KV_GB + 6 ))
+    REC_REASON_CTX="${REC_CONTEXT_SIZED} - what this model's KV cost fits in the memory cap; agent sessions share one window"
+  fi
 }
 
 # Does the *current* env.conf fit this machine?
@@ -320,7 +351,7 @@ print_recommendation() {
   }
 
   row "MODEL"              "$MODEL"              "$REC_MODEL"
-  row "CONTEXT_WINDOW"     "$CONTEXT_WINDOW"     "$REC_CONTEXT"
+  row "CONTEXT_WINDOW"     "$CONTEXT_WINDOW"     "${REC_CONTEXT_SIZED:-$REC_CONTEXT}"
   row "KV_QUANT"           "$KV_QUANT"           "$REC_KV"
   row "MEMORY_LIMIT_GB"    "$MEMORY_LIMIT_GB"    "$REC_MEMORY_LIMIT_GB"
 
@@ -349,7 +380,7 @@ print_recommendation() {
 apply_config() {
   python3 - "$ENV_FILE" \
     "MODEL=$REC_MODEL" \
-    "CONTEXT_WINDOW=$REC_CONTEXT" \
+    "CONTEXT_WINDOW=${REC_CONTEXT_SIZED:-$REC_CONTEXT}" \
     "KV_QUANT=$REC_KV" \
     "MEMORY_LIMIT_GB=$REC_MEMORY_LIMIT_GB" \
     "PREFILL_CHUNK_TOKENS=$REC_PREFILL_CHUNK" <<'PY'
@@ -413,7 +444,7 @@ model_note() {
     gguf-g-31b)      echo "dense 31B abliterated - the highest quality, and the slowest" ;;
     gguf-g-e4b)      echo "loses to both e2b and the 26B on every axis" ;;
     gguf-g-e2b)      echo "smallest, and the fastest small model: fits an 8 GB Mac" ;;
-    gguf-q-27b)      echo "dense 27B, ~13.5 t/s; its MTP head needs a build step - or use the MLX build (~2.2x faster)" ;;
+    gguf-q-27b)      echo "dense 27B with a DFlash2 drafter, ~41 t/s on code; the MLX build is faster for agent loops" ;;
     gguf-q-9b)       echo "dense 9B, ~44 t/s - the MLX build is about twice this (~90 t/s)" ;;
     gguf-q-35ba3b)   echo "MoE like the default, different family (Qwen 3.6, not 3.8)" ;;
     gguf-b-27b)      echo "27B in 7.2 GB (ternary) - needs ./lib/fetch-runtime.sh prism" ;;

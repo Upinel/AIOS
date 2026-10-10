@@ -171,8 +171,11 @@ def main():
 
         # ── and it stays scoped to the model that asked for it ────────────
         bin_gemma, _ = build_args(root, GEMMA, "gguf-g-26ba4b", fake_rt)
+        # Stock means the pinned upstream build when it is installed, and
+        # Homebrew's on PATH otherwise - never the Prism fork.
         check("a Gemma model still uses stock llama-server even with PRISM_RUNTIME set",
-              bin_gemma, "llama-server")
+              bin_gemma in ("llama-server", os.path.join(REPO, "run/runtimes/llama/llama-server"))
+              or bin_gemma.endswith("/llama-server") and "prism" not in bin_gemma, True)
 
         # ── the value written back to env.conf is quoted ──────────────────
         # A path with spaces is the reason: unquoted it becomes a different

@@ -27,7 +27,28 @@
 # serving only Bonsai 2 has everything it needs without Homebrew's copy - and
 # telling it "llama.cpp is not installed" right after it installed one would be
 # wrong.
+# The pinned upstream build ./lib/fetch-runtime.sh llama installs. Preferred
+# over whatever Homebrew has, because Homebrew floats: a fresh install today
+# gets a different binary from the one the numbers in this repo were measured
+# on, and an old one never sees the Metal kernels that came after it.
+gguf_pinned_server() {
+  local bin="${RUN_DIR:-$REPO_DIR/run}/runtimes/llama/llama-server"
+  [[ -x "$bin" ]] && printf '%s\n' "$bin"
+  return 0
+}
+
+# The stock llama-server this engine runs: the pinned build if installed,
+# Homebrew's otherwise. LLAMA_SERVER is deliberately not consulted here - it
+# names the patched FastMTP build, which is used only for the drafts that need
+# it (below) and measures slower on everything else.
+gguf_stock_server() {
+  local p; p="$(gguf_pinned_server)"
+  if [[ -n "$p" ]]; then printf '%s\n' "$p"; return 0; fi
+  command -v llama-server 2>/dev/null || echo llama-server
+}
+
 engine_present() {
+  [[ -n "$(gguf_pinned_server)" ]] && return 0
   command -v llama-server >/dev/null 2>&1 && return 0
   local key bin
   key="$(runtime_key_for_model "${MODEL_REPO:-}")"
@@ -39,7 +60,7 @@ engine_present() {
 engine_name() { echo "llama.cpp"; }
 
 engine_version() {
-  llama_version
+  "$(gguf_stock_server)" --version 2>&1 | grep -m1 '^version:' | sed 's/^version: //'
 }
 
 engine_install_hint() {
@@ -48,6 +69,13 @@ engine_install_hint() {
 
 # Install the runtime. Idempotent: skips when it is already there.
 engine_install() {
+  # The pinned build first: it is a 12 MB checksummed download, needs no
+  # Homebrew, and is the build this project is measured on.
+  if "$REPO_DIR/lib/fetch-runtime.sh" llama; then
+    ok "llama.cpp ready: $(engine_version)"
+    return 0
+  fi
+  warn "Pinned llama.cpp unavailable - falling back to Homebrew."
   if command -v llama-server >/dev/null 2>&1; then
     ok "llama.cpp already installed: $(llama_version)"
     return 0
@@ -157,13 +185,40 @@ engine_build_args() {
     [[ -n "$mmproj" ]] || warn "ENABLE_VISION=1 but no mmproj found; serving text only."
   fi
 
-  draft="$(model_draft_gguf "$dir" || true)"
+  local method spec_type="draft-mtp"
+  method="$(model_spec_method_for "${MODEL_REPO:-}")"
+  if [[ "$method" == "dflash" ]]; then
+    draft="$(model_dflash_gguf "$dir")"
+    spec_type="draft-dflash"
+    # No DFlash drafter on disk: fall back to whatever MTP head the model has,
+    # with the MTP rules below, rather than run without speculation.
+    if [[ -z "$draft" ]]; then
+      warn "No DFlash drafter for this model on disk; ./model_download.sh $(alias_for_repo "${MODEL_REPO:-}") fetches it."
+      method="mtp"; spec_type="draft-mtp"
+      draft="$(model_draft_gguf "$dir" || true)"
+    fi
+  elif [[ "$method" == "none" ]]; then
+    draft=""
+  else
+    draft="$(model_draft_gguf "$dir" || true)"
+  fi
+  # A head inside the main weights beats a sidecar: it needs no patched
+  # llama.cpp and it was trained with exactly these weights. Measured on the
+  # heretic Qwen 3.6 35B-A3B: 105.5 t/s on code at depth 2 against 75.8 with
+  # no draft, 96% acceptance at depth 1.
+  ENGINE_NATIVE_MTP=0
+  if [[ "$method" == "mtp" ]] && (( $(gguf_native_mtp_layers "$main") > 0 )); then
+    ENGINE_NATIVE_MTP=1
+    draft="$main"
+  fi
   depth="$(effective_depth)"
+  # An MTP depth makes no sense as a DFlash block size, and vice versa.
+  if [[ "$method" == "mtp" ]] && (( depth > 8 )); then depth=3; fi
 
   # A trimmed-vocabulary draft head accepts fewer tokens the deeper you draft,
   # so depth 1 beats depth 3 for those. Only when the user left MTP_DEPTH=auto
   # and no tuned value exists.
-  if [[ "$MTP_DEPTH" == "auto" ]] && [[ -n "$draft" ]] \
+  if [[ "$MTP_DEPTH" == "auto" && "$method" != "dflash" ]] && (( ! ENGINE_NATIVE_MTP )) && [[ -n "$draft" ]] \
      && [[ -z "$(tuned_depth)" ]] && draft_needs_patched_runtime "$draft"; then
     depth=1
   fi
@@ -175,7 +230,7 @@ engine_build_args() {
   # nearest-looking substitute is worse than a failure, because stock llama.cpp
   # loads it and emits gibberish. So a model-declared runtime is a hard
   # requirement: resolve it or stop with something the user can act on.
-  LLAMA_BIN="llama-server"
+  LLAMA_BIN="$(gguf_stock_server)"
   rtkey="$(runtime_key_for_model "${MODEL_REPO:-}")"
   if [[ -n "$rtkey" ]]; then
     rtbin="$(runtime_server_for "$rtkey")"
@@ -192,16 +247,22 @@ engine_build_args() {
   # A draft built against a patched llama.cpp will not load on a stock one, and
   # llama-server treats that as fatal. Detect it rather than letting "a bit more
   # speed" become "will not start".
-  if [[ -z "$rtkey" ]] && (( depth > 0 )) && [[ -n "$draft" ]] && draft_needs_patched_runtime "$draft"; then
+  if [[ -z "$rtkey" && "$method" != "dflash" ]] && (( ! ENGINE_NATIVE_MTP )) && (( depth > 0 )) && [[ -n "$draft" ]] && draft_needs_patched_runtime "$draft"; then
     if [[ -n "${LLAMA_SERVER:-}" && -x "${LLAMA_SERVER:-}" ]]; then
       LLAMA_BIN="$LLAMA_SERVER"
     elif (( ${DRAFT_PATCHED_RUNTIME:-0} )); then
-      LLAMA_BIN="llama-server"
+      LLAMA_BIN="$(command -v llama-server 2>/dev/null || echo llama-server)"
     else
       warn "$(basename "$draft") needs a patched llama.cpp (trimmed draft vocab)."
       warn "Running autoregressive. See docs/GGUF-RUNTIME.md."
       depth=0; draft=""
     fi
+  fi
+
+  local srv_host="$HOST" srv_port="$PORT"
+  ENGINE_SNAP_DIR=""; ENGINE_SNAP_IDENT=""
+  if gguf_router_enabled; then
+    srv_host="127.0.0.1"; srv_port="$(gguf_backend_port)"
   fi
 
   ARGS=(
@@ -210,26 +271,38 @@ engine_build_args() {
     -fa on
     -c "$CONTEXT_WINDOW"
     -b "$BATCH_SIZE"
-    -ub "$UBATCH_SIZE"
+    -ub "$(gguf_ubatch)"
     --parallel "$PARALLEL_SLOTS"
+    --cache-ram "${CACHE_RAM_MB:-8192}"
     -ctk "$(kv_quant_for gguf)"
     -ctv "$(kv_quant_for gguf)"
-    --host "$HOST"
-    --port "$PORT"
+    --host "$srv_host"
+    --port "$srv_port"
     --alias "$SERVED_MODEL_NAME"
     --no-webui
     --metrics
     --timeout 3600
   )
 
+  # Several sessions share ONE context pool. Without this llama.cpp divides -c
+  # evenly between the slots, so the agent profile's 4 sessions turned a 128k
+  # window into four 32k ones (the log said n_ctx_slot = 32768) and a 16 GB
+  # Mac's 16k into four 4k ones. Unified, any one session can use the whole
+  # window and they draw on the same pool.
+  (( PARALLEL_SLOTS > 1 )) && ARGS+=( --kv-unified )
+
   # Keep the weights resident. Without this macOS can page them out and decode
   # becomes erratic rather than merely slow.
-  (( USE_MLOCK )) && ARGS+=( -lm mlock )
+  (( USE_MLOCK )) && ARGS+=( -lm "$(gguf_lock_mode)" )
   [[ -n "$mmproj" ]] && ARGS+=( --mmproj "$mmproj" )
   [[ -n "${API_KEY:-}" ]] && ARGS+=( --api-key "$API_KEY" )
 
   if (( depth > 0 )) && [[ -n "$draft" ]]; then
-    ARGS+=( -md "$draft" --spec-type draft-mtp --spec-draft-n-max "$depth" --spec-draft-ngl all )
+    if (( ENGINE_NATIVE_MTP )); then
+      ARGS+=( --spec-type draft-mtp --spec-draft-n-max "$depth" )
+    else
+      ARGS+=( -md "$draft" --spec-type "$spec_type" --spec-draft-n-max "$depth" --spec-draft-ngl all )
+    fi
   fi
 
   # Thinking. Gemma 4's template reads enable_thinking; llama.cpp passes
@@ -257,9 +330,54 @@ engine_build_args() {
     fi
   fi
 
+  if gguf_router_enabled; then
+    ENGINE_SNAP_IDENT="$(gguf_snapshot_ident "$main" "${draft:-}")"
+    ENGINE_SNAP_DIR="$RUN_DIR/slots/$ENGINE_SNAP_IDENT"
+    mkdir -p "$ENGINE_SNAP_DIR"
+    ARGS+=( --slot-save-path "$ENGINE_SNAP_DIR" )
+  fi
+
   ENGINE_DEPTH="$depth"
+  ENGINE_SPEC="$spec_type"
   ENGINE_DRAFT="${draft:-}"
   ENGINE_MMPROJ="$mmproj"
+}
+
+# ── the prefix-snapshot router (lib/agent-router.py) ─────────────────────────
+# On by default for llama.cpp. It sits on PORT and llama-server moves to a
+# loopback-only BACKEND_PORT behind it. What it buys is measured, not assumed:
+# sibling subagents that share a 17k-token tool prefix finish in about a
+# second instead of re-prefilling it cold, and the first turn after a restart
+# restores the prefix from disk instead of recomputing it. AGENT_ROUTER=off
+# puts llama-server back on PORT directly. MTPLX shares prefixes across
+# sessions natively, so it never gets one.
+gguf_router_enabled() {
+  case "${AGENT_ROUTER:-auto}" in
+    off|0|no) return 1 ;;
+  esac
+  [[ -f "$REPO_DIR/lib/agent-router.py" ]]
+}
+
+gguf_backend_port() { echo "${BACKEND_PORT:-$(( PORT + 100 ))}"; }
+
+# Snapshots are only valid for the exact weights, runtime and cache layout that
+# wrote them, so they live in a directory named after all three.
+gguf_snapshot_ident() {
+  local main="$1" draft="$2"
+  printf '%s|%s|%s|%s|%s' "$(basename "$main")" "$(stat -f%z "$main" 2>/dev/null)" \
+    "$(engine_version)" "$(kv_quant_for gguf)" "$(basename "${draft:-none}")" \
+    | shasum -a 256 | cut -c1-16
+}
+
+engine_router_command() {
+  gguf_router_enabled || return 0
+  ROUTER_ARGS=( python3 "$REPO_DIR/lib/agent-router.py"
+    --listen "${HOST}:${PORT}"
+    --backend "http://127.0.0.1:$(gguf_backend_port)"
+    --snap-dir "$ENGINE_SNAP_DIR"
+    --ident "$ENGINE_SNAP_IDENT" )
+  [[ -n "${API_KEY_FILE:-}" && -f "${API_KEY_FILE:-}" ]] && ROUTER_ARGS+=( --api-key-file "$API_KEY_FILE" )
+  return 0
 }
 
 # Extra environment the runtime needs, beyond the command line.
@@ -274,11 +392,21 @@ engine_banner() {
     log "  runtime      $(runtime_label_for "$rtkey")"
   fi
   if (( ${ENGINE_DEPTH:-0} > 0 )); then
-    log "  speculative  depth $ENGINE_DEPTH   ($(basename "$ENGINE_DRAFT"))"
+    if [[ "${ENGINE_SPEC:-}" == "draft-dflash" ]]; then
+      log "  speculative  DFlash, block $ENGINE_DEPTH   ($(basename "$ENGINE_DRAFT"))"
+    elif (( ${ENGINE_NATIVE_MTP:-0} )); then
+      log "  speculative  depth $ENGINE_DEPTH   (the model's own MTP head)"
+    else
+      log "  speculative  depth $ENGINE_DEPTH   ($(basename "$ENGINE_DRAFT"))"
+    fi
   else
     log "  speculative  off (plain autoregressive)"
   fi
   log "  vision       $([[ -n "${ENGINE_MMPROJ:-}" ]] && echo "on" || echo "off")"
+  log "  sessions     ${PARALLEL_SLOTS}$( (( PARALLEL_SLOTS > 1 )) && echo "   (one shared ${CONTEXT_WINDOW}-token pool)")"
+  if gguf_router_enabled; then
+    log "  prefix cache router on :${PORT} -> llama-server :$(gguf_backend_port)   (snapshots persist across restarts)"
+  fi
   log "  tensor API   $(gguf_tensor_state)"
 }
 
@@ -334,4 +462,29 @@ engine_apply_settings() {
   fi
 }
 
-engine_binary() { echo "${LLAMA_BIN:-llama-server}"; }
+engine_binary() { echo "${LLAMA_BIN:-$(gguf_stock_server)}"; }
+
+# Prompt tokens per GPU pass. On M5 the tensor-API flash-attention kernel only
+# engages for a large enough block of queries, and a 2048 ubatch measured 9%
+# less time to first token on a 17k-token agent prefix (prefill ~1,530 t/s
+# against ~1,400 at 512). Elsewhere 512 stays: it is what M1-M4 were measured
+# on, and a bigger ubatch costs compute-buffer memory a 16 GB Mac does not have.
+gguf_ubatch() {
+  case "${UBATCH_SIZE:-auto}" in
+    auto)
+      if chip_has_neural_accelerator && (( $(total_ram_gb) >= 32 )); then echo 2048; else echo 512; fi ;;
+    *) echo "$UBATCH_SIZE" ;;
+  esac
+}
+
+# How USE_MLOCK pins the weights. "mlock" alone means no mmap: the whole file
+# is read and copied into locked anonymous memory. "mmap+mlock" maps the file
+# and locks the mapping - the same residency guarantee without a second copy
+# or the slower load. Older builds only know "mlock".
+gguf_lock_mode() {
+  if "${LLAMA_BIN:-$(gguf_stock_server)}" --help 2>&1 | grep -q 'mmap+mlock'; then
+    echo "mmap+mlock"
+  else
+    echo "mlock"
+  fi
+}

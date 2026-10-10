@@ -248,6 +248,28 @@ with a `Q2_0` ternary file, because it applies no Hadamard transform and says
 nothing about it. Use the `gguf-b-*` aliases, which are the packed files, and the
 Prism runtime — [GGUF-RUNTIME.md](GGUF-RUNTIME.md#bonsai-2-27b-needs-the-prismml-fork).
 
+## Something looks wrong with the prefix router   (GGUF)
+
+On llama.cpp models, `lib/agent-router.py` listens on `PORT` and llama-server
+runs behind it on `BACKEND_PORT` (default `PORT + 100`, loopback only). Its log
+lines are in `run/server.log`, prefixed `[router]`:
+
+```
+[router] snapshot 3547243b: 17126 tokens, built in slot 0 in 13.25s
+[router] restored 3547243b into slot 1 in 0.10s
+```
+
+- **To rule it out**, set `AGENT_ROUTER=off` and `./restart.sh`: llama-server
+  goes back on `PORT` directly and nothing else changes.
+- **"Port N (the llama-server backend behind the router) is in use"**: set
+  `BACKEND_PORT` to a free port.
+- **Disk**: snapshots live in `run/slots/<id>/`, at most 8 per model and 8 GB
+  in total, oldest evicted first. A 17k-token prefix is ~1 GB on the Gemma 26B.
+  The directory name changes with the model, runtime and KV type, so old ones
+  can be deleted safely.
+- `curl http://127.0.0.1:PORT/router/stats` shows how many snapshots were
+  built and restored.
+
 ## Output loops, or the model will not stop
 
 This is a known pathology of reasoning models on repetitive input.

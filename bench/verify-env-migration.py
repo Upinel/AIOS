@@ -138,7 +138,10 @@ def main():
         check("a renamed setting keeps its value under the new name",
               value_of(merged_path, "PICK_TIMEOUT_SECONDS"), "12")
         check("and the rename is reported",
-              rep["renamed"], {"MODEL_PICK_SECONDS": "PICK_TIMEOUT_SECONDS"})
+              rep["renamed"].get("MODEL_PICK_SECONDS"), "PICK_TIMEOUT_SECONDS")
+        # PARALLEL_SLOTS / MAX_CONCURRENT became SESSIONS, carrying the larger.
+        check("the two concurrency keys merge into SESSIONS",
+              value_of(merged_path, "SESSIONS") is not None, True)
 
         check("a setting nothing reads is dropped",
               value_of(merged_path, "NGRAM_PREWARM"), None)

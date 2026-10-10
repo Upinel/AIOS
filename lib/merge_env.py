@@ -70,6 +70,22 @@ def merge(user_text, shipped_text):
             user_vals[new] = user_vals.pop(old)
             renamed[old] = new
 
+    # PARALLEL_SLOTS (llama.cpp) and MAX_CONCURRENT (MTPLX) were one idea kept
+    # under two names, and the shipped file had them disagree. They became
+    # SESSIONS; the larger of the two is what the user was asking for.
+    if "SESSIONS" not in user_vals and ("PARALLEL_SLOTS" in user_vals or "MAX_CONCURRENT" in user_vals):
+        nums = []
+        for k in ("PARALLEL_SLOTS", "MAX_CONCURRENT"):
+            v = user_vals.get(k, "").strip().strip('"')
+            if v.isdigit():
+                nums.append(int(v))
+        if nums:
+            user_vals["SESSIONS"] = str(max(nums))
+            renamed["PARALLEL_SLOTS+MAX_CONCURRENT"] = "SESSIONS"
+    for k in ("PARALLEL_SLOTS", "MAX_CONCURRENT"):
+        if k not in shipped_vals:
+            user_vals.pop(k, None)
+
     removed = sorted(k for k in user_vals if k in REMOVED)
     for k in removed:
         user_vals.pop(k, None)

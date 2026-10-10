@@ -232,11 +232,13 @@ safe at any context. Switch to `sustained` only if turbo misbehaves.
 BATCHING_PRESET="agent"    # default: coding-agent traffic, long shared prefixes
 BATCHING_PRESET="solo"     # one client, lowest latency
 BATCHING_PRESET="throughput"  # many concurrent clients
-MAX_CONCURRENT=2           # in-flight requests
+SESSIONS=2                 # in-flight requests (was MAX_CONCURRENT)
 ```
 
-Single-client latency is best at `MAX_CONCURRENT=1`. Multiple agents doing
-independent work want 2–4, at some cost each.
+Single-client latency is best at `SESSIONS=1`. Multiple agents doing
+independent work want 2–4, at some cost each. `SESSIONS` is the one key for
+both engines now; the old `MAX_CONCURRENT` and `PARALLEL_SLOTS` still load,
+and `./update_env.sh` converts them.
 
 ### Thinking effort
 

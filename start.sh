@@ -105,6 +105,7 @@ fi
 # wins: --profile agent --set THINKING=high means high.
 apply_expert_profile
 [[ -n "$SET_VALUES" ]] && apply_set_overrides "$SET_VALUES"
+finalize_runtime_settings
 
 # Re-derive the alias from the repo that is actually being served. The picker
 # sets MODEL_REPO and MODEL_DIR but not MODEL_ALIAS, so without this the engine
@@ -219,11 +220,27 @@ engine_export_env
 
 ENGINE_BIN="$(engine_binary)"
 SERVE_WORD="$(engine_serve_word 2>/dev/null || echo '')"
+ROUTER_ARGS=()
+engine_router_command
 
 if (( PRINT_ONLY )); then
   log "$ENGINE_BIN ${SERVE_WORD:+$SERVE_WORD }\\"
   printf '  %s \\\n' "${ARGS[@]}"
+  if (( ${#ROUTER_ARGS[@]} )); then
+    log ""
+    log "  # prefix router, in front of it on port $PORT:"
+    printf '  %s \\\n' "${ROUTER_ARGS[@]}"
+  fi
   exit 0
+fi
+
+# The router moves llama-server onto a loopback port; that one has to be free
+# as well.
+if (( ${#ROUTER_ARGS[@]} )); then
+  BPORT="$(gguf_backend_port)"
+  BEXIST="$(lsof -nP -iTCP:"$BPORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  [[ -n "$BEXIST" ]] && die "Port $BPORT (the llama-server backend behind the router) is in use by pid $BEXIST.
+    Stop it, set BACKEND_PORT in env.conf, or set AGENT_ROUTER=off."
 fi
 
 # ── banner ───────────────────────────────────────────────────────────────────
@@ -249,6 +266,16 @@ log ""
 # ── launch ───────────────────────────────────────────────────────────────────
 if (( FOREGROUND )); then
   info "Starting in the foreground. Ctrl-C to stop."
+  if (( ${#ROUTER_ARGS[@]} )); then
+    # The router cannot outlive the server it fronts: launchd restarts this
+    # whole script, and an orphaned router would hold the port.
+    "${ROUTER_ARGS[@]}" </dev/null >>"$LOG_FILE" 2>&1 &
+    echo "$!" > "$ROUTER_PID_FILE"
+    trap 'kill -TERM "$(cat "$ROUTER_PID_FILE" 2>/dev/null)" 2>/dev/null; rm -f "$ROUTER_PID_FILE"' EXIT
+    # shellcheck disable=SC2086
+    "$ENGINE_BIN" $SERVE_WORD "${ARGS[@]}"
+    exit $?
+  fi
   # shellcheck disable=SC2086
   exec "$ENGINE_BIN" $SERVE_WORD "${ARGS[@]}"
 fi
@@ -270,6 +297,13 @@ SERVER_PID=$!
 disown "$SERVER_PID" 2>/dev/null || true
 echo "$SERVER_PID" > "$PID_FILE"
 
+if (( ${#ROUTER_ARGS[@]} )); then
+  nohup "${ROUTER_ARGS[@]}" </dev/null >>"$LOG_FILE" 2>&1 &
+  ROUTER_PID=$!
+  disown "$ROUTER_PID" 2>/dev/null || true
+  echo "$ROUTER_PID" > "$ROUTER_PID_FILE"
+fi
+
 info "Waiting for the server to answer /health ..."
 wait_healthy 900 && RC=0 || RC=$?
 case "$RC" in
@@ -289,6 +323,8 @@ case "$RC" in
     ;;
   2)
     rm -f "$PID_FILE"
+    if router_alive; then kill -TERM "$(cat "$ROUTER_PID_FILE")" 2>/dev/null || true; fi
+    rm -f "$ROUTER_PID_FILE"
     die "The server exited during startup. Last lines of $LOG_FILE:
 $(tail -n 25 "$LOG_FILE" 2>/dev/null)"
     ;;

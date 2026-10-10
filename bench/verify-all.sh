@@ -57,6 +57,7 @@ bench/verify-draft-select.py
 bench/verify-runtime-select.py
 bench/verify-memory-guard.py
 bench/verify-paste.py
+bench/verify-router.py
 "
 
 TOTAL_PASS=0

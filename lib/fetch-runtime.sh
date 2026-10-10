@@ -14,6 +14,8 @@
 # Install a llama.cpp runtime that Homebrew does not ship.
 #
 #   ./lib/fetch-runtime.sh              list the runtimes, and what you have
+#   ./lib/fetch-runtime.sh llama        the pinned stock llama.cpp (default engine)
+#   ./lib/fetch-runtime.sh llama --rollback   back to the previous pinned build
 #   ./lib/fetch-runtime.sh prism        download, verify, install and wire up
 #   ./lib/fetch-runtime.sh prism --force   replace an existing install
 #
@@ -50,11 +52,25 @@ PRISM_ASSET="llama-${PRISM_TAG}-bin-macos-arm64.tar.gz"
 PRISM_SHA256="7fffa7a40c74f3e9bd78f3f2f9f12f9befb7b13af45d5a69c239cf3fd37b9045"
 PRISM_URL="https://github.com/PrismML-Eng/llama.cpp/releases/download/${PRISM_TAG}/${PRISM_ASSET}"
 
+# The stock runtime, pinned the same way. Homebrew's llama.cpp floats with
+# whatever was current on the day it was installed, so two machines running
+# "the same" UpinelAIOS ran different kernels - and this one sat on b10809
+# while ~730 builds of Metal work landed upstream (tensor-API flash attention
+# for f16 KV on M5, few-row mat-mul for speculative verify on M1-M4). This is
+# the build every number in the README is now measured on.
+LLAMA_TAG="b11541"
+LLAMA_ASSET="llama-${LLAMA_TAG}-bin-macos-arm64.tar.gz"
+LLAMA_SHA256="226929037cfcb956f50ae1d54bac13d3d9446d8d819c439580e1e2c00197da5e"
+LLAMA_URL="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}/${LLAMA_ASSET}"
+
 FORCE=0
+ROLLBACK=0
 WANT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force)  FORCE=1; shift ;;
+    --rollback) ROLLBACK=1; shift ;;
+    llama)    WANT="llama"; shift ;;
     -h|--help) show_usage "${BASH_SOURCE[0]}"; exit 0 ;;
     prism)    WANT="prism"; shift ;;
     fastmtp)  die "The FastMTP runtime is not installed by this script.
@@ -103,6 +119,15 @@ report_runtime() {
 
 list_runtimes() {
   step "llama.cpp runtimes"
+  local d; d="$(runtime_default_dir llama)"
+  log ""
+  log "  ${C_BOLD}llama${C_RESET}   stock llama.cpp, pinned (every GGUF model except Bonsai)"
+  if [[ -x "$d/llama-server" ]]; then
+    log "    ${C_DIM}installed     ${C_RESET}$d/llama-server  ($(cat "$d/.version" 2>/dev/null))"
+  else
+    log "    ${C_DIM}installed     ${C_RESET}no - Homebrew's llama-server is used instead"
+  fi
+  log "    ${C_DIM}pinned tag    ${C_RESET}$LLAMA_TAG"
   report_runtime prism
   log ""
   log "  ${C_DIM}Install the one you need:  ./lib/fetch-runtime.sh prism${C_RESET}"
@@ -111,6 +136,55 @@ list_runtimes() {
 
 if [[ -z "$WANT" ]]; then
   list_runtimes
+  exit 0
+fi
+
+# ── install the pinned stock llama.cpp ───────────────────────────────────────
+# The previous install is kept as llama.prev, so a pin bump that regresses is
+# one command to undo:  ./lib/fetch-runtime.sh llama --rollback
+if [[ "$WANT" == "llama" ]]; then
+  DEST="$(runtime_default_dir llama)"
+  PREV="${DEST}.prev"
+  if (( ROLLBACK )); then
+    [[ -x "$PREV/llama-server" ]] || die "No previous llama.cpp to roll back to ($PREV)."
+    rm -rf "${DEST}.rb"; mv "$DEST" "${DEST}.rb" 2>/dev/null || true
+    mv "$PREV" "$DEST"; [[ -d "${DEST}.rb" ]] && mv "${DEST}.rb" "$PREV"
+    ok "rolled back to $(cat "$DEST/.version" 2>/dev/null)"
+    exit 0
+  fi
+  step "Installing llama.cpp $LLAMA_TAG (pinned)"
+  if [[ -x "$DEST/llama-server" && "$(cat "$DEST/.version" 2>/dev/null)" == "$LLAMA_TAG" && "$FORCE" == "0" ]]; then
+    ok "already installed: $DEST/llama-server  ($LLAMA_TAG)"
+    exit 0
+  fi
+  require_bin curl "curl is required to download the runtime."
+  require_bin shasum "shasum is required to verify the download."
+  TMP="$RUN_DIR/.runtime-llama.tar.gz"
+  mkdir -p "$RUN_DIR/runtimes"
+  rm -f "$TMP"
+  info "downloading $LLAMA_ASSET"
+  curl -fL --retry 5 --retry-delay 2 --retry-all-errors -o "$TMP" "$LLAMA_URL" \
+    || die "download failed: $LLAMA_URL"
+  GOT="$(shasum -a 256 "$TMP" | awk '{print $1}')"
+  if [[ "$GOT" != "$LLAMA_SHA256" ]]; then
+    rm -f "$TMP"
+    die "Checksum MISMATCH for $LLAMA_ASSET
+    expected: $LLAMA_SHA256
+    actual:   $GOT"
+  fi
+  ok "checksum matches the pinned release"
+  STAGE="${DEST}.new"
+  rm -rf "$STAGE"; mkdir -p "$STAGE"
+  tar -xzf "$TMP" -C "$STAGE" --strip-components=1 || die "could not extract the archive."
+  rm -f "$TMP"
+  printf '%s\n' "$LLAMA_TAG" > "$STAGE/.version"
+  xattr -dr com.apple.quarantine "$STAGE" 2>/dev/null || true
+  "$STAGE/llama-server" --version >/dev/null 2>&1 \
+    || die "$STAGE/llama-server does not run - the archive may be corrupt."
+  if [[ -d "$DEST" ]]; then rm -rf "$PREV"; mv "$DEST" "$PREV"; fi
+  mv "$STAGE" "$DEST"
+  ok "$("$DEST/llama-server" --version 2>&1 | grep -m1 '^version:')"
+  info "previous build kept for rollback: ./lib/fetch-runtime.sh llama --rollback"
   exit 0
 fi
 

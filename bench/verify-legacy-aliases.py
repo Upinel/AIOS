@@ -53,7 +53,7 @@ GGUF_ERA = {
     "e2b":         "HauhauCS/Gemma-4-E2B-Uncensored-HauhauCS-Aggressive",
     "qwen-27b":    "HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF",
     "qwen-9b":     "mradermacher/Qwen3.8-9B-heretic-uncensored-i1-GGUF",
-    "qwen-35b":    "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive",
+    "qwen-35b":    "llmfan46/Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-GGUF",
 }
 
 # The MLX edition's aliases, which is where the subtle collisions live.

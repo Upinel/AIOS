@@ -57,7 +57,12 @@ if [[ "$MODE" == "tune" ]]; then
   OUT="$RUN_DIR/tuning-${MODEL_REPO//\//--}.json"
   echo '{"results":[' > "$OUT"
   FIRST=1
-  for d in 0 1 2 3 4; do
+  # MTPLX refuses a depth above 3, so sweeping 4 there only cost a load.
+  DEPTHS="0 1 2 3 4"
+  [[ "$(model_engine_for "${MODEL_ALIAS:-$MODEL_REPO}" 2>/dev/null)" == "mlx" ]] && DEPTHS="0 1 2 3"
+  # A DFlash drafter proposes a whole block; its knob is the block size.
+  [[ "$(model_spec_method_for "$MODEL_REPO")" == "dflash" ]] && DEPTHS="0 8 12 16"
+  for d in $DEPTHS; do
     python3 - "$ENV_FILE" "$d" <<'PY'
 import re, sys
 path, depth = sys.argv[1], sys.argv[2]
@@ -73,20 +78,44 @@ PY
     # that only ever makes a run slower, so the best run is the closest estimate
     # of what the depth can do - two identical control configs measured 80.6 and
     # 69.6 by median but 85.5 and 83.6 by best.
-    TPS="$(python3 "$REPO_DIR/bench/bench.py" --url "http://127.0.0.1:${PORT}" \
-      --model "$SERVED_MODEL_NAME" --api-key-file "$API_KEY_FILE" \
-      --contexts 8192 --max-tokens "$MAX_TOKENS" --repeats 3 2>/dev/null \
-      | grep 'context~' \
-      | sed -n 's/.*decode= *\([0-9.]*\) t\/s.*/\1/p' \
-      | sort -rn | head -1)"
+    #
+    # Measured on what an agent generates - a whole file inside a write_file
+    # call, sampled at temperature 0.6 behind an 8k tool prefix - and not on a
+    # greedy prompt: greedy pins draft acceptance near 100% and is exactly the
+    # condition under which deep drafting looks better than it is. Rate is end
+    # to end (tokens over the request's wall time), because MTPLX releases a
+    # tool call only once it is complete.
+    TPS=""
+    for _rep in 1 2 3; do
+      _J="$RUN_DIR/.tune-$d-$_rep.json"
+      python3 "$REPO_DIR/bench/hermes-replay.py" --base "http://127.0.0.1:${PORT}/v1" \
+        --model "$SERVED_MODEL_NAME" --key-file "$API_KEY_FILE" \
+        --prefix-tokens 8000 --turns 1 --phases prefix,write --write-tokens 1536 \
+        --json "$_J" >/dev/null 2>&1 || true
+      _T="$(python3 - "$_J" <<'PY' 2>/dev/null
+import json, sys
+d = json.load(open(sys.argv[1]))
+w = [r for r in d["rows"] if r.get("phase") == "write" and r.get("wall_s")]
+print(f"{w[0]['completion_tokens'] / w[0]['wall_s']:.2f}" if w and w[0].get("completion_tokens") else "")
+PY
+)"
+      rm -f "$_J"
+      [[ -n "$_T" ]] || continue
+      if [[ -z "$TPS" ]] || awk -v a="$_T" -v b="$TPS" 'BEGIN{exit !(a>b)}'; then TPS="$_T"; fi
+    done
     printf '  depth %-2s  %s t/s\n' "$d" "${TPS:-?}"
     [[ -n "$TPS" ]] && awk -v a="$TPS" -v b="$BEST_TPS" 'BEGIN{exit !(a>b)}' \
       && { BEST_TPS="$TPS"; BEST_DEPTH="$d"; }
     (( FIRST )) || printf ',' >> "$OUT"; FIRST=0
     printf '{"depth":%s,"tok_s":%s}' "$d" "${TPS:-0}" >> "$OUT"
   done
-  printf '],"best_depth":%s,"best_tok_s":%s,"model_repo":"%s"}\n' \
-    "${BEST_DEPTH:-1}" "${BEST_TPS:-0}" "$MODEL_REPO" >> "$OUT"
+  # Stamped with what it was measured on. A depth tuned on one runtime is a
+  # guess on the next - the llama.cpp bump that brought probabilistic drafting
+  # moved Gemma's best depth from 2 to 3 - so tuned_depth() ignores a file
+  # whose runtime or chip no longer matches.
+  printf '],"best_depth":%s,"best_tok_s":%s,"model_repo":"%s","runtime":"%s","chip":"%s","metric":"replay-write-e2e"}\n' \
+    "${BEST_DEPTH:-1}" "${BEST_TPS:-0}" "$MODEL_REPO" "$(engine_version 2>/dev/null | tr -d '"')" \
+    "$(detected_chip 2>/dev/null | tr -d '"')" >> "$OUT"
   # Put MTP_DEPTH back exactly as it was, and let the per-model file carry
   # the answer. Writing the winner here looks helpful and is not: MTP_DEPTH
   # is one global setting, so tuning the GGUF model pinned its depth onto

@@ -425,11 +425,11 @@ if (( DO_TUNE )); then
   elif "$REPO_DIR/bench/bench.sh" --tune; then
     ok "Tune complete."
   else
-    warn "Auto-tune did not complete; MTP_DEPTH=auto will use depth 1,"
-    warn "which is the measured optimum on the reference M5 Pro."
+    warn "Auto-tune did not complete; MTP_DEPTH=auto will use the per-model default,"
+    warn "measured on the reference M5 Pro. Run ./bench/bench.sh --tune to tune this Mac."
   fi
 else
-  step "Skipping the depth sweep (MTP_DEPTH=auto will use depth 1)"
+  step "Skipping the depth sweep (MTP_DEPTH=auto uses a measured per-model default)"
 fi
 
 # ── 5. optional wired-memory ceiling ─────────────────────────────────────────
@@ -439,7 +439,7 @@ if (( WIRED_LIMIT_GB > 0 )); then
   TARGET_MB=$(( WIRED_LIMIT_GB * 1024 ))
   if (( CURRENT_MB >= TARGET_MB )); then
     ok "Already at ${CURRENT_MB} MB (target ${TARGET_MB} MB)."
-  elif (( TARGET_MB > HW_RAM_GB * 1024 * 90 / 100 )); then
+  elif (( TARGET_MB > ${HW_RAM_GB:-$(total_ram_gb)} * 1024 * 90 / 100 )); then
     warn "WIRED_LIMIT_GB=${WIRED_LIMIT_GB} is over 90% of RAM. Refusing to apply."
     warn "That setting causes jetsam kills and can leak wired pages on a hard kill."
   else
