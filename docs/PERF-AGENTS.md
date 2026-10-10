@@ -203,12 +203,15 @@ b11541, MTPLX 2.12.2, 8k prefix, 64k window, best of 2:
 | Qwen 9B MTPLX (BF16 pack), depth 2 | 328.2 s | 97.5 s | 12.2 t/s |
 | Qwen 9B MTPLX (BF16 pack), depth 3 | 278.4 s | 106.3 s | 10.6 t/s |
 
-Prefix router, same Mac, four subagents at once: **112.8 s → 4.24 s**.
+Prefix router, same Mac, four subagents at once: **112.8 s → 4.24 s**
+(second run: 108.8 s → 4.30 s).
 
 What it decided:
 
-- **E2B depth 3** holds on M1 too (+65% code decode over no draft) — already
-  the default.
+- **E2B depth 3** holds on M1 too — already the default. Its margin over no
+  draft is noisy on this machine: +65% on code decode in the first run (43.2
+  against 26.2 t/s), +25% in a clean second run (41.9 against 33.5 t/s, 214
+  against 225 s for the session). It won both runs.
 - **`-ub 512` stays the default off-M5**; 1024 was slower on every column.
 - **q8 KV was 34% slower than f16** on the M1, as on the M5. The installer now
   keeps f16 on 16-24 GB Macs whenever that still leaves a 32k window (it
@@ -229,8 +232,10 @@ What it decided:
   | cold TTFT, 8k prefix | 98.4 s | **71.7 s** (−27%) |
   | code decode | 13.7 t/s | **16.6 t/s** (+21%) |
 
-  Depth 2 on the FP16 copy decoded slower (15.5 t/s) and had four failed
-  requests, so depth 1 stays the M1 default. The E2B again preferred depth 3
+  A clean second run, two rounds, agreed: 236.4 against 295.7 s for the
+  session, 71.6 against 98.5 s cold TTFT, 16.9 against 13.7 t/s. Depth 2 on the
+  FP16 copy tied on the session (238.6 s) and decoded slower (15.1 t/s), so
+  depth 1 stays the M1 default. The E2B again preferred depth 3
   (41.0 t/s on code, 214 s for the session).
 
 ## 4. Subagents and restarts: the prefix router

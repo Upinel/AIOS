@@ -16,7 +16,7 @@
 | Phase 5 per-chip pack selection (FP16 vs BF16 MLX packs) | **done** — `lib/make-fp16-pack.py`, served automatically on M1/M2 | M1: session −20%, cold TTFT −27%, decode +21% |
 | Phase 6 agent profile v2 | **done** | Hermes wiring skipped, as agreed |
 | Phase 7 tuning invalidation, offline router test, docs | **done** | 442/444 offline checks pass; the 2 left compare against the last commit and pass once committed |
-| Small-Mac validation | **done (M1 16 GB)** | E2B depth 3 +65%; router 112.8 → 4.2 s; q8 KV −34% → installer keeps f16; 9B depth 1 off-M5 |
+| Small-Mac validation | **done (M1 16 GB, two runs)** | E2B depth 3 +25-65%; router 112.8 → 4.2 s; q8 KV −34% → installer keeps f16; 9B depth 1 off-M5 |
 
 Measurements: [docs/PERF-AGENTS.md](docs/PERF-AGENTS.md).
 
