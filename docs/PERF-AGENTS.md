@@ -238,6 +238,22 @@ What it decided:
   depth 1 stays the M1 default. The E2B again preferred depth 3
   (41.0 t/s on code, 214 s for the session).
 
+### Gemma 4 E4B (added 2026-10-11)
+
+The E4B also ran with no draft model. It now gets its MTP assistant
+(`amaranus/Gemma-4-E4B-it-qat-assistant-MTP-Q8_0-GGUF`, 0.1 GB) as a companion
+download. M5 Pro, 8k prefix, 64k window, best of 2:
+
+| config | session | code decode | acceptance |
+|---|---:|---:|---:|
+| no draft (what it ran before) | 69.9 s | 64.1 t/s | — |
+| MTP depth 1 | 62.3 s | 86.0 t/s | 0.73 |
+| MTP depth 2 | 46.2 s | 100.6 t/s | 0.63 |
+| **MTP depth 3** (the default) | **45.7 s** | **108.7 t/s** | 0.57 |
+
++70% on code and −35% on the session; depth 3 is already the generic default.
+Not yet measured on the M1.
+
 ## 4. Subagents and restarts: the prefix router
 
 On llama.cpp a prefix is reused only from the slot holding it. Hermes runs

@@ -211,6 +211,12 @@ model_companion_for() {
       printf '%s|%s\n' \
         "amaranus/Gemma-4-E2B-it-qat-assistant-MTP-Q8_0-GGUF" "*assistant-MTP*.gguf"
       ;;
+    gguf-g-e4b)
+      # The same thing for the E4B, which also ran with no draft: its own MTP
+      # assistant (Q8_0, 0.1 GB), from the same source as the E2B's.
+      printf '%s|%s\n' \
+        "amaranus/Gemma-4-E4B-it-qat-assistant-MTP-Q8_0-GGUF" "*assistant-MTP*.gguf"
+      ;;
   esac
   return 0
 }

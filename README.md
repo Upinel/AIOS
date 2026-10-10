@@ -177,6 +177,7 @@ configurations run interleaved, best of two rounds, on the pinned runtimes
 | model | engine | writing code | first reply, cold | 4 subagents |
 |---|---|---:|---:|---:|
 | Gemma 4 E2B `gguf-g-e2b` | llama.cpp | **123 t/s** | 2.8 s | **1.0 s** |
+| Gemma 4 E4B `gguf-g-e4b` | llama.cpp | **109 t/s** | 4.5 s | — |
 | Gemma 4 26B `gguf-g-26ba4b` *(default)* | llama.cpp | **105 t/s** | 11–12 s | **2.3 s** |
 | Qwen 3.6 35B `mlx-q-35ba3b` | MLX | **101 t/s** | **7.5 s** | 3.7 s |
 | Qwen 3.6 35B `gguf-q-35ba3b` | llama.cpp | 106 t/s | 12.0 s | 3.8 s |
@@ -211,6 +212,8 @@ M5's Neural Accelerators show. On both, the biggest win for agents is the same:
 | First reply after a restart | 16.2 s | **0.5 s** |
 | Context each agent session actually gets (4 sessions, 128k) | 32k | **128k** |
 | Qwen 27B on llama.cpp, writing code (new DFlash2 drafter) | 10 t/s | **41 t/s** |
+| Gemma E4B writing code (new MTP draft model) | 64 t/s | **109 t/s** |
+| Gemma E4B whole agent session | 69.9 s | **45.7 s** |
 
 **On the M1 with 16 GB**
 
@@ -266,7 +269,7 @@ engine, so you can always tell what runs it.
 | **`gguf-g-26ba4b`** | Gemma 4 26B-A4B (MoE) | 15 GB | **the default** — fast, high quality, vision |
 | `gguf-g-e2b` | Gemma 4 E2B | 4 GB | the fastest small model; best for 16 GB Macs |
 | `gguf-g-12b` | Gemma 4 12B | 8 GB | the most capable model for 16 GB |
-| `gguf-g-e4b` | Gemma 4 E4B | 6 GB | only if the 26B will not fit |
+| `gguf-g-e4b` | Gemma 4 E4B | 6 GB | a step up from the E2B: 109 tokens/s on an M5 Pro with its draft model |
 | `gguf-g-31b` | Gemma 4 31B | 20 GB | highest-quality dense Gemma |
 | **`mlx-q-35ba3b`** | Qwen 3.6 35B-A3B (MoE) | 22 GB | **the fastest big model** |
 | `mlx-q-27b-4bit` | Qwen 3.8 27B | 19 GB | the quality pick |
