@@ -252,7 +252,7 @@ download. M5 Pro, 8k prefix, 64k window, best of 2:
 | **MTP depth 3** (the default) | **45.7 s** | **108.7 t/s** | 0.57 |
 
 +70% on code and −35% on the session; depth 3 is already the generic default.
-Not yet measured on the M1.
+On the M1 16 GB, with the draft: 18.7 t/s decode and 177 t/s prefill.
 
 ## 4. Subagents and restarts: the prefix router
 

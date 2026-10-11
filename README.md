@@ -192,7 +192,11 @@ configurations run interleaved, best of two rounds, on the pinned runtimes
 | model | engine | writing code | first reply, cold | 4 subagents |
 |---|---|---:|---:|---:|
 | Gemma 4 E2B `gguf-g-e2b` | llama.cpp | **42 t/s** | 35 s | **4.3 s** |
+| Gemma 4 E4B `gguf-g-e4b` | llama.cpp | 18.7 t/s | — | — |
 | Qwen 3.8 9B `mlx-q-9b` | MLX | 17 t/s | 72 s | 13.4 s |
+
+The E4B row is from its own M1 run with the new draft model: 18.7 tokens/s
+decode and 177 tokens/s prefill.
 
 **What the two machines tell you.** The M5 Pro writes about 3× faster than the
 M1 on the same model, and reads a prompt about 12× faster — that is where the
