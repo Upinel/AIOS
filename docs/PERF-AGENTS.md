@@ -232,7 +232,9 @@ What it decided:
   | cold TTFT, 8k prefix | 98.4 s | **71.7 s** (−27%) |
   | code decode | 13.7 t/s | **16.6 t/s** (+21%) |
 
-  A clean second run, two rounds, agreed: 236.4 against 295.7 s for the
+  A third run (2026-10-11) repeated it within a few percent (16.2 against
+  13.1 t/s, 72.0 against 98.9 s; router 109.1 → 4.4 s). A clean second run,
+  two rounds, agreed: 236.4 against 295.7 s for the
   session, 71.6 against 98.5 s cold TTFT, 16.9 against 13.7 t/s. Depth 2 on the
   FP16 copy tied on the session (238.6 s) and decoded slower (15.1 t/s), so
   depth 1 stays the M1 default. The E2B again preferred depth 3

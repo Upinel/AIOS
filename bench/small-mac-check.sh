@@ -28,6 +28,7 @@
 #   * ubatch 512 against 1024, and f16 against q8 KV, on 16 GB
 #   * the prefix router: four subagents sharing a tool prefix, with and without
 #   * MTPLX 2.12 on Qwen 3.8 9B, depth 1-3
+#   * Gemma 4 E4B with and without its MTP assistant, when it is on disk
 #
 # It stops a running UpinelAIOS server first (it needs the memory) and does not
 # restart it. Results land in run/small-mac-report/; send report.txt back.
@@ -92,6 +93,14 @@ E2B_DRAFT="$(model_draft_gguf "$E2B_DIR")"
 python3 "$REPO_DIR/lib/tools-template.py" --gguf "$E2B" --out "$OUT/tpl-e2b.jinja" >/dev/null 2>&1 \
   && TPL=( --chat-template-file "$OUT/tpl-e2b.jinja" ) || TPL=()
 
+E4B=""; E4B_DRAFT=""
+E4B_DIR="$MODELS_DIR/$(model_repo_for gguf-g-e4b | sed 's#/#--#')"
+if [[ -d "$E4B_DIR" ]]; then
+  E4B="$(model_main_gguf "$E4B_DIR" || true)"
+  "$REPO_DIR/model_download.sh" gguf-g-e4b >/dev/null 2>&1 || true   # fetches its draft
+  E4B_DRAFT="$(MODEL_REPO="$(model_repo_for gguf-g-e4b)" model_draft_gguf "$E4B_DIR")"
+fi
+
 Q9_DIR=""
 if [[ -x "$MTPLX" ]]; then
   Q9_DIR="$(need_model mlx-q-9b)" || Q9_DIR=""
@@ -119,6 +128,18 @@ fi
   echo "e2b-mtp3=$BASE -ub 512 -ctk f16 -ctv f16 $DRAFT --spec-draft-n-max 3"
   echo "e2b-mtp2-ub1024=$BASE -ub 1024 -ctk f16 -ctv f16 $DRAFT --spec-draft-n-max 2"
   echo "e2b-mtp2-q8=$BASE -ub 512 -ctk q8_0 -ctv q8_0 $DRAFT --spec-draft-n-max 2"
+  # Gemma 4 E4B, with and without its MTP assistant - only when it is already
+  # on disk, since it is a 6 GB download the rest of the check does not need.
+  if [[ -n "$E4B" ]]; then
+    E4B_BASE="$(printf '%s' "$BASE" | sed "s#-m $E2B #-m $E4B #; s#--chat-template-file [^ ]*##")"
+    if python3 "$REPO_DIR/lib/tools-template.py" --gguf "$E4B" --out "$OUT/tpl-e4b.jinja" >/dev/null 2>&1; then
+      E4B_BASE="$E4B_BASE --chat-template-file $OUT/tpl-e4b.jinja"
+    fi
+    echo "e4b-nodraft=$E4B_BASE -ub 512 -ctk f16 -ctv f16"
+    if [[ -n "$E4B_DRAFT" ]]; then
+      echo "e4b-mtp3=$E4B_BASE -ub 512 -ctk f16 -ctv f16 -md $E4B_DRAFT --spec-type draft-mtp --spec-draft-ngl all --spec-draft-n-max 3"
+    fi
+  fi
   if [[ -n "$Q9_DIR" ]]; then
     MX="$MTPLX serve --model $Q9_DIR --host 127.0.0.1 --port {port} --context-window $CTX \
 --max-tokens 4096 --paged-kv-quantization q8 --batching-preset agent --max-active-requests 4 \
