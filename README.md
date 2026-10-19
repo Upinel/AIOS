@@ -10,7 +10,7 @@
   "Make it work, make it right, make it fast - then measure it, because
    the third one is only a claim until the numbers agree."
 -->
-<h1 align="center">UpinelAIOS</h1>
+<h1 align="center">Upinel/AIOS</h1>
 
 <p align="center">
   <b>A fast, private, uncensored AI agent server for your Mac.</b><br>
