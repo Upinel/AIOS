@@ -20,7 +20,6 @@
 
 <p align="center">
   <sub>Built by <b>Nova Upinel Chow</b>, MSc, LLM, BBA, MENSA &nbsp;·&nbsp;
- 
   <a href="mailto:dev@upinel.com">dev@upinel.com</a> &nbsp;·&nbsp;
   <a href="https://upinel.com">upinel.com</a></sub><br>
   <sub>Free for personal use, and free for creators — YouTubers, KOLs, streamers
