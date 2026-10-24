@@ -343,6 +343,26 @@ llama.cpp-only. `AGENT_ROUTER=off` removes it.
 - Gemma 4 E2B gets its MTP assistant as a companion download; it ran with no
   draft at all before.
 
+## Findings in one place
+
+- Splash is the fastest engine for the Qwen 3.8 27B and 3.6 35B-A3B on M3+
+  (2.0-2.4x code decode over MTPLX), except four-way subagent fan-out on the
+  27B (11.1 s against 6.0 s). It serves their GGUF builds only here; it
+  refuses MLX packs with FP16 norms, Gemma and the Qwen 9B.
+- Reusing the tool prefix (llama.cpp router, MTPLX and Splash natively) is the
+  largest agent-specific win on both Macs.
+- Runtime upgrades alone: llama.cpp -17%, MTPLX -35% (35B) / -50% (27B) per
+  session.
+- Draft models are per model and per chip: E2B/E4B MTP assistants +25-70%;
+  DFlash rejected for the uncensored Gemma 26B and Qwen 35B (9-18%
+  acceptance), adopted for the 27B GGUF on llama.cpp.
+- f16 KV beat q8 on every Mac measured, including the M1 (-29% with q8).
+- M1/M2: FP16 copies of BF16 MLX packs, -20% per session; 9B depth 1 there,
+  depth 2 on M5; `-ub 2048` helps M5 only.
+- Measurement: temperature 0.6, interleaved best-of rounds, a gap between
+  engines (MTPLX's memory guard refuses work while another engine's memory is
+  still wired), and a plain code step beside the agent-shaped write step.
+
 ## Still to measure
 
 - Nothing outstanding from the plan. `./bench/small-mac-check.sh` stays as the

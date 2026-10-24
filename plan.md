@@ -9,7 +9,7 @@
 | Phase 2 pin + upgrade llama.cpp (b11541) and MTPLX (2.12.2) | **done** | Gemma 26B session −17%; Qwen 35B −35%; Qwen 27B −50% |
 | Phase 2 retune depths, stamp tunings with runtime + chip | **done** | Gemma 26B 2 → 3; 35B 1; 27B 3; 9B 2; E2B 3 |
 | Phase 3 spec-method registry; DFlash/DSpark bake-off | **done** | DFlash rejected for Gemma 26B and Qwen 35B (9-18% acceptance); **adopted** for `gguf-q-27b` (10 → 41 t/s); native MTP heads detected and used |
-| Phase 3.4 third engine | not needed | llama.cpp + MTPLX cover every cell; no third engine added |
+| Phase 3.4 third engine | **done** — Splash (incoai/splash), M3+ only | Qwen 35B code 101 → 239 t/s, session 32.6 → 24.8 s; Qwen 27B code 35 → 69 t/s, session 117.9 → 81.2 s; picked at start, llama.cpp as the alternative |
 | Phase 4 shared KV, cache-ram tiers, ubatch auto | **done** | `-ub 2048` on M5: −9% cold TTFT |
 | Phase 4 prefix snapshots / restart warm / subagents | **done** — `lib/agent-router.py` | 4 subagents 35.6 → 2.3 s; first turn after restart 16.2 → 0.48 s |
 | Phase 5 per-tier KV, load mode, memory-sized context, 16 GB lineup | **done** | context sized from each model's KV cost |

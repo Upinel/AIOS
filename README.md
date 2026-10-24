@@ -48,20 +48,26 @@ subagents.
 ## How fast is it?
 
 Measured by replaying a real agent session — a Hermes-sized tool prompt, tool
-calls, a file write, four parallel subagents — on the two ends of the range
-this project supports:
+calls, a file write, four parallel subagents, a history compaction — at the
+temperature agents actually use, on both ends of the range this project
+supports. Each row is the fastest engine for that model on that Mac.
 
 | | **M5 Pro · 64 GB** | **M1 · 16 GB** |
 |---|---:|---:|
-| Writing code, small model (Gemma 4 E2B) | **123 tokens/s** | **42 tokens/s** |
-| Writing code, the default model (Gemma 4 26B) | **105 tokens/s** | — *(needs 32 GB)* |
-| Writing code, Qwen 3.6 35B (Splash) | **239 tokens/s** | — *(needs 32 GB, M3+)* |
-| Writing code, Qwen 3.8 27B (Splash) | **69 tokens/s** | — *(needs 32 GB, M3+)* |
+| Writing code, Qwen 3.6 35B-A3B | **239 tokens/s** *(Splash)* | — *(needs 32 GB)* |
+| Writing code, Gemma 4 E2B | **123 tokens/s** | **42 tokens/s** |
+| Writing code, Gemma 4 E4B | **109 tokens/s** | 18.7 tokens/s |
+| Writing code, Gemma 4 26B *(default model)* | **105 tokens/s** | — *(needs 32 GB)* |
+| Writing code, Qwen 3.8 9B | 71 tokens/s *(MLX)* | 17 tokens/s *(MLX)* |
+| Writing code, Qwen 3.8 27B | **69 tokens/s** *(Splash)* | — *(needs 32 GB)* |
+| First reply to a 17k-token agent prompt, Qwen 35B | **5.8 s** | — |
 | Four subagents sharing one tool prompt | **2.3 s** *(was 35.6 s)* | **4.3 s** *(was 108.8 s)* |
 | First reply after a restart | **0.5 s** *(was 16.2 s)* | — |
 
-Peak decode is **141 tokens/s** (Qwen 35B MoE on MLX, short prompt). All the
-numbers, and how they were measured, are in [Benchmarks](#benchmarks).
+"Writing code" is a ~1,000-token Python module sampled at temperature 0.6.
+Splash needs an M3 or newer, so on the M1 the Qwen models run on MLX.
+Everything measured, and how: [Benchmarks](#benchmarks) and
+[What we found](#what-we-found).
 
 ## Get started
 
@@ -252,6 +258,68 @@ Want to check your own Mac? `./bench/small-mac-check.sh` runs the small-Mac
 suite and writes a report; `bench/matrix.py` compares any server settings you
 like. The complete tables, including everything that was tried and *rejected*,
 are in [docs/PERF-AGENTS.md](docs/PERF-AGENTS.md).
+
+## What we found
+
+The short version of every experiment behind the defaults — what worked, what
+did not, and what to keep in mind. The full numbers are in
+[docs/PERF-AGENTS.md](docs/PERF-AGENTS.md).
+
+**What made the biggest difference**
+
+- **Splash doubles the Qwen models on newer Macs.** On the M5 Pro the 35B writes
+  code at 239 tokens/s against 101 on MTPLX, and the 27B at 69 against 35, with
+  faster first replies too. It needs an M3 or newer, serves only the Qwen 27B
+  and 35B, and loads their GGUF builds — the MLX packs here store FP16 norms,
+  which it refuses, so those stay on MTPLX.
+- **Not re-reading the tool prompt is the biggest agent win.** An agent's system
+  prompt and tool list are the same on every turn and for every subagent.
+  Reusing them took four subagents from 35.6 s to 2.3 s on the M5 Pro and from
+  108.8 s to 4.3 s on the M1, and the first reply after a restart from 16.2 s
+  to 0.5 s.
+- **Keeping the runtimes current was the cheapest win.** Moving to the current
+  llama.cpp made a whole Gemma session 17% faster; the MTPLX update cut Qwen
+  sessions by 35% (35B) and 50% (27B). Nothing else changed.
+- **Every draft model is worth testing per model.** Gemma's E2B and E4B had no
+  draft model at all; giving them one made them 25–70% faster at writing code.
+- **Agent sessions had a quarter of the memory they were promised.** Four
+  sessions used to split the 128k window into four 32k ones; they now share it.
+
+**What did not work, and why**
+
+- **The DFlash block drafters, on these uncensored models.** Published drafters
+  are trained on the original (aligned) models. Against the uncensored
+  fine-tunes they guessed right only 9–18% of the time on Gemma 26B and Qwen
+  35B, which made things *slower*. On the Qwen 27B they help for long code,
+  which is why it uses one on llama.cpp.
+- **A compressed (q8) cache to save memory bandwidth.** It was slower on every
+  Mac tested — 30% slower on the M1 — because decompressing it costs more than
+  it saves. The cache stays f16 wherever it fits.
+- **Splash for everything.** It has no Gemma support and no Qwen 9B, and on the
+  27B its four-subagent fan-out took 11.1 s against MTPLX's 6.0 s.
+
+**What depends on your chip**
+
+- **M1 and M2 have no bfloat16**, which the uncensored MLX packs use. An FP16
+  copy built once on those Macs made the Qwen 9B 20% faster per session and its
+  first reply 27% faster.
+- **The best draft depth differs by chip.** The Qwen 9B is fastest at depth 2 on
+  the M5 Pro and depth 1 on the M1; defaults follow the chip.
+- **Bigger prompt batches only help M5.** They cut first-reply time 9% on the M5
+  Pro and made no measurable difference on the M1 (within run-to-run noise
+  across three runs), so the larger size is M5-only.
+
+**Notes on measuring**
+
+- Benchmarks here sample at temperature 0.6. Greedy sampling makes draft models
+  look far better than they are in real use.
+- Configurations run interleaved, best of two or more rounds — a laptop's heat
+  and background apps move single runs by 10% or more.
+- Run engines back to back with a gap. MTPLX's memory guard refused requests
+  when it started right after another engine still held memory.
+- Small models do not always do what a scripted test asks (one answered a
+  "write this file" step by reading files first), so code-writing speed is
+  measured on a plain code prompt as well.
 
 ## How it gets this fast
 
