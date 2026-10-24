@@ -16,6 +16,7 @@
 #   ./restart.sh              graceful stop, then start with the current env.conf
 #   ./restart.sh --model X    switch to a model (and therefore an engine)
 #   ./restart.sh --profile Y  master a workload: speed | agent | writer | manual
+#   ./restart.sh --engine E   splash, or the model's own engine (llama.cpp / mlx)
 #   ./restart.sh --force      SIGKILL on stop if the graceful path hangs
 #   ./restart.sh --force-load start even when the plan looks too big for this Mac
 #   ./restart.sh --wait 5     extra seconds to let the port and GPU settle
@@ -39,6 +40,7 @@ SETTLE=3
 PRINT_ONLY=0
 MODEL_OVERRIDE=""
 PROFILE_OVERRIDE=""
+ENGINE_FLAG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force)  FORCE=1 ;;
@@ -49,6 +51,8 @@ while [[ $# -gt 0 ]]; do
     --print)  PRINT_ONLY=1 ;;
     --model)  MODEL_OVERRIDE="$2"; shift ;;
     --profile) PROFILE_OVERRIDE="$2"; shift ;;
+    # Handed to start.sh, which asks the engine question itself otherwise.
+    --engine)  ENGINE_FLAG="--engine $2"; shift ;;
     -h|--help) show_usage "$0"; exit 0 ;;
     *) die "Unknown argument: $1  (try --help)" ;;
   esac
@@ -168,7 +172,17 @@ EFFECTIVE_DEPTH="$(effective_depth 2>/dev/null || echo 3)"
 
 log ""
 log "  ${C_BOLD}Starting with:${C_RESET}"
-log "    engine     $(engine_name 2>/dev/null || echo "$ENGINE_R")"
+# A Splash-compatible model can start on Splash or on its own engine, and
+# start.sh is the one that decides (it may ask). Say so rather than naming one.
+_ENGINE_LINE="$(engine_name 2>/dev/null || echo "$ENGINE_R")"
+if [[ "${SPLASH:-auto}" != "off" && -n "$(splash_draft_for_repo "$MODEL_REPO_R")" ]] \
+   && [[ -n "$(splash_python)" ]] && chip_runs_splash; then
+  case "$ENGINE_FLAG" in
+    "--engine splash") _ENGINE_LINE="Splash" ;;
+    "")                _ENGINE_LINE="Splash or ${_ENGINE_LINE}   (chosen as it starts)" ;;
+  esac
+fi
+log "    engine     $_ENGINE_LINE"
 log "    profile    $(expert_profile_label "${EXPERT_PROFILE:-speed}")   (expert profile)"
 log "    model      $MODEL_REPO_R${MODEL_ALIAS_R:+   ($MODEL_ALIAS_R)}"
 log "    served as  $SERVED_MODEL_NAME"
@@ -234,9 +248,9 @@ SET_FLAGS=""
 for _v in ${MANUAL_VALUES:-}; do SET_FLAGS="$SET_FLAGS --set $_v"; done
 
 if (( PICKED )); then
-  "$REPO_DIR/start.sh" --model "$MODEL_REPO" --profile "$EXPERT_PROFILE" $FORCE_FLAG $SET_FLAGS
+  "$REPO_DIR/start.sh" --model "$MODEL_REPO" --profile "$EXPERT_PROFILE" $FORCE_FLAG $SET_FLAGS $ENGINE_FLAG
 else
-  "$REPO_DIR/start.sh" --profile "$EXPERT_PROFILE" $FORCE_FLAG $SET_FLAGS
+  "$REPO_DIR/start.sh" --profile "$EXPERT_PROFILE" $FORCE_FLAG $SET_FLAGS $ENGINE_FLAG
 fi
 RC=$?
 

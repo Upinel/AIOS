@@ -20,6 +20,8 @@
 #   ./start.sh --profile agent    master a workload: speed | agent | writer | manual
 #   ./start.sh --set CONTEXT_WINDOW=65536   override one setting for this run
 #   ./start.sh --force-load    start even when the plan looks too big for this Mac
+#   ./start.sh --engine splash   for a Splash-compatible model: splash (the
+#                                default) or its own engine (llama.cpp / mlx)
 #
 # The engine is not a setting. A model belongs to exactly one runtime - a GGUF
 # checkpoint can only run on llama.cpp, an MTPLX pack can only run on MTPLX - so
@@ -31,7 +33,7 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 load_config
 
-FOREGROUND=0; PRINT_ONLY=0; MODEL_OVERRIDE=""; PROFILE_OVERRIDE=""; SET_VALUES=""
+FOREGROUND=0; PRINT_ONLY=0; MODEL_OVERRIDE=""; PROFILE_OVERRIDE=""; SET_VALUES=""; ENGINE_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -f|--foreground) FOREGROUND=1 ;;
@@ -41,6 +43,9 @@ while [[ $# -gt 0 ]]; do
     --force-load)    FORCE_LOAD=1 ;;
     --model)         MODEL_OVERRIDE="$2"; shift ;;
     --profile)       PROFILE_OVERRIDE="$2"; shift ;;
+    # For a model two engines can serve: splash, or the model's own engine
+    # (llama.cpp / native / mlx). Skips the engine question.
+    --engine)        ENGINE_OVERRIDE="$2"; shift ;;
     # Repeatable, KEY=VALUE. ./restart.sh uses it to hand over what its manual
     # prompts collected, so the questions are asked once rather than twice.
     --set)           SET_VALUES="$SET_VALUES ${2:-}"; shift ;;
@@ -126,6 +131,28 @@ fi
 [[ -n "$ENGINE" ]] || die "Cannot tell which engine serves '$MODEL_REPO'.
     Known aliases: $MODEL_ALIASES
     Or point MODEL at a directory under $MODELS_DIR that holds a complete model."
+
+# Splash takes over the Qwen 27B and 35B-A3B on an M3 or newer when it can
+# serve the files on disk (lib/common.sh: splash_takes_over). Its own engine
+# stays the fallback, and SPLASH=off in env.conf skips the check.
+case "$ENGINE_OVERRIDE" in
+  ""|splash|native|llama.cpp|llamacpp|gguf|mlx|mtplx) ;;
+  *) die "--engine must be splash, or the model's own engine (llama.cpp, mlx)" ;;
+esac
+if [[ "${SPLASH:-auto}" != "off" && -n "$(splash_draft_for_repo "$MODEL_REPO")" ]] \
+   && [[ -z "$ENGINE_OVERRIDE" || "$ENGINE_OVERRIDE" == "splash" ]]; then
+  if splash_takes_over "$MODEL_REPO" "$MODEL_DIR"; then
+    if [[ "$ENGINE_OVERRIDE" == "splash" ]] || [[ "$(choose_engine_for_model "$ENGINE")" == "splash" ]]; then
+      ENGINE="splash"
+    else
+      info "Serving it on $(native_engine_label "$ENGINE") for this run (./start.sh --engine splash to skip this question)."
+    fi
+  elif [[ "$ENGINE_OVERRIDE" == "splash" ]]; then
+    warn "Splash cannot serve this model here; using $(native_engine_label "$ENGINE")."
+  fi
+elif [[ "$ENGINE_OVERRIDE" == "splash" ]]; then
+  warn "Splash serves the Qwen 3.8 27B and Qwen 3.6 35B-A3B only (or SPLASH=off); using $(native_engine_label "$ENGINE")."
+fi
 
 ENGINE_MODULE="$REPO_DIR/lib/engines/$ENGINE.sh"
 [[ -f "$ENGINE_MODULE" ]] || die "No engine module for '$ENGINE' at $ENGINE_MODULE"

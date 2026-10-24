@@ -377,7 +377,7 @@ QUOTED = {"MODEL", "KV_QUANT", "PROFILE", "THINKING", "MODEL_QUANT",
           # everything around it in env.conf is quoted. Same value either way,
           # but it made the file look hand-edited when it was not.
           "EXPERT_PROFILE", "AGENT_ROUTER", "CACHE_RAM_MB", "UBATCH_SIZE",
-          "MTPLX_BIN", "BACKEND_PORT", "MLX_FP16_PACK"}
+          "MTPLX_BIN", "BACKEND_PORT", "MLX_FP16_PACK", "SPLASH"}
 src = open(path, encoding="utf-8").read()
 val = f'"{value}"' if key in QUOTED and not value.startswith('"') else value
 new, n = re.subn(rf'^{re.escape(key)}=.*$', f'{key}={val}', src, count=1, flags=re.M)
@@ -435,6 +435,7 @@ load_config() {
   SPEC_METHOD="auto"
   AGENT_ROUTER="auto"
   BACKEND_PORT=""
+  SPLASH="auto"
   MTPLX_BIN=""
   MLX_FP16_PACK="auto"
   LOG_FILE="$REPO_DIR/run/server.log"
@@ -1996,6 +1997,137 @@ print("" if best is None else int(best))
 PY
 }
 
+# ── Splash (incoai/splash), the third engine ────────────────────────────────
+# Splash is not chosen by alias. It takes over a Qwen 3.8 27B or Qwen 3.6
+# 35B-A3B from llama.cpp or MTPLX when it can serve the files already on disk:
+# measured on the M5 Pro with the uncensored weights this project ships, it
+# writes code roughly 1.5-2x as fast as either (see docs/PERF-AGENTS.md).
+# SPLASH=off keeps every model on its own engine.
+
+splash_root() {
+  local r
+  for r in "${SPLASH_ROOT:-}" /opt/homebrew/opt/splash/libexec /usr/local/opt/splash/libexec; do
+    [[ -n "$r" && -x "$r/python/bin/python3" && -d "$r/install" ]] && { printf '%s\n' "$r"; return 0; }
+  done
+  return 0
+}
+
+splash_python() {
+  local r; r="$(splash_root)"
+  [[ -n "$r" ]] && printf '%s\n' "$r/python/bin/python3"
+  return 0
+}
+
+# The DFlash2 draft Splash trained for this model's family, or empty when the
+# model is not one Splash serves. Gemma, Bonsai and anything else: empty.
+splash_draft_for_repo() {
+  case "$1" in
+    *Qwen3.8-27B*|*Qwen3.8-27b*)   echo "incoai/Qwen3.8-27B-DFlash2" ;;
+    *Qwen3.6-35B-A3B*)             echo "incoai/Qwen3.6-35B-A3B-DFlash2" ;;
+  esac
+  return 0
+}
+
+# What Splash is handed for a model directory: the main GGUF of a GGUF model,
+# or the directory itself for an MLX pack.
+splash_target_for_dir() {
+  local dir="$1" g
+  [[ -d "$dir" ]] || return 0
+  g="$(model_main_gguf "$dir" 2>/dev/null || true)"
+  if [[ -n "$g" ]]; then printf '%s\n' "$g"; return 0; fi
+  if [[ -f "$dir/config.json" ]] && compgen -G "$dir/*.safetensors" >/dev/null; then
+    printf '%s\n' "$dir"
+  fi
+  return 0
+}
+
+# M3 and later. Splash's kernels target Apple9 GPUs and up, and it refuses
+# M1/M2 - which keep llama.cpp and MTPLX, measured on an M1 to be the right
+# engines there anyway.
+chip_runs_splash() {
+  local f; f="$(chip_family)"
+  [[ "$f" =~ ^M([0-9]+)$ ]] && (( ${BASH_REMATCH[1]} >= 3 ))
+}
+
+# Should Splash serve this model instead of its own engine? Prints nothing
+# and fails when not, with the reason on stderr only when Splash was a
+# candidate - a Gemma model on an M1 needs no explanation.
+splash_takes_over() {
+  local repo="$1" dir="$2" py target draft lo=()
+  [[ "${SPLASH:-auto}" != "off" ]] || return 1
+  draft="$(splash_draft_for_repo "$repo")"
+  [[ -n "$draft" ]] || return 1
+  py="$(splash_python)"
+  [[ -n "$py" ]] || return 1
+  chip_runs_splash || return 1
+  target="$(splash_target_for_dir "$dir")"
+  [[ -n "$target" ]] || return 1
+  (( ${ENABLE_VISION:-0} )) || lo=( --language-only )
+  # An MLX pack whose layer norms are FP16 - the "-FP16" builds made for
+  # M1/M2 - passes Splash's own check and then fails as it loads ("source
+  # tensor type or shape does not match: ...input_layernorm.weight"): Splash
+  # reads those tensors as BF16. Caught here, so the pack goes to MTPLX
+  # instead of becoming a server that never comes up.
+  if [[ -d "$target" ]] && python3 - "$target" <<'PY' 2>/dev/null
+import glob, json, struct, sys
+for f in sorted(glob.glob(sys.argv[1] + "/*.safetensors")):
+    with open(f, "rb") as fh:
+        n = struct.unpack("<Q", fh.read(8))[0]
+        h = json.loads(fh.read(n))
+    for k, v in h.items():
+        if k.endswith("layernorm.weight") and isinstance(v, dict):
+            sys.exit(0 if v.get("dtype") == "F16" else 1)
+sys.exit(1)
+PY
+  then
+    warn "This pack stores its norms in FP16, which Splash does not load; its own engine will serve it."
+    return 1
+  fi
+  local why
+  if ! why="$("$py" -P "$REPO_DIR/lib/splash-serve.py" --check --target "$target" \
+                --draft-repo "$draft" "${lo[@]}" 2>&1 >/dev/null)"; then
+    warn "Splash cannot serve these files, so the model's own engine will:"
+    warn "    $(printf '%s' "$why" | grep -v -i warning | tail -1 | cut -c1-200)"
+    return 1
+  fi
+  return 0
+}
+
+# ── which engine, for a model two engines can serve ──────────────────────────
+# A Splash-compatible model has two engines: Splash, and the one its alias
+# names (llama.cpp for a GGUF, MTPLX for an MLX pack). Splash is the default -
+# it measured fastest - and this asks only when there is a terminal and the
+# choice was not already made with --engine. Prints "splash" or "native".
+native_engine_label() {
+  case "$1" in
+    mlx)  echo "MLX / MTPLX" ;;
+    *)    echo "llama.cpp" ;;
+  esac
+}
+
+choose_engine_for_model() {
+  local native="$1" ans
+  if [[ ! -t 0 ]] || (( ${PRINT_ONLY:-0} )); then echo splash; return 0; fi
+  {
+    log ""
+    log "  ${C_BOLD}Engine for this model${C_RESET}   it can run on either"
+    log ""
+    log "   1  Splash        DFlash2 and Metal kernels built for this model  <- default"
+    log "   2  $(printf '%-13s' "$(native_engine_label "$native")") the model's own engine"
+    log ""
+    printf '  Number [1-2], or Enter for Splash. Auto-selects in %ds: ' "$PICK_TIMEOUT_SECONDS"
+  } >&2
+  ans=""
+  if ! read -r -t "$PICK_TIMEOUT_SECONDS" ans; then
+    log "" >&2
+    echo splash; return 0
+  fi
+  case "${ans//[!0-9]/}" in
+    2) echo native ;;
+    *) echo splash ;;
+  esac
+}
+
 # Which speculative method a model's draft uses: mtp (an MTP head or assistant,
 # llama.cpp --spec-type draft-mtp) or dflash (a block-diffusion drafter,
 # --spec-type draft-dflash, whose "depth" is the block size it drafts at once).
@@ -2079,6 +2211,21 @@ config_fingerprint() {
 save_config_snapshot() {
   mkdir -p "$RUN_DIR"
   config_fingerprint > "$CONFIG_SNAPSHOT_FILE"
+  # The engine actually launched. A Splash-compatible model can run on Splash
+  # or on its own engine, so the alias alone no longer says which one is
+  # serving - status.sh and the dashboard read it from here.
+  [[ -n "${ENGINE:-}" ]] && printf 'ENGINE=%s\n' "$ENGINE" >> "$CONFIG_SNAPSHOT_FILE"
+  return 0
+}
+
+# The engine serving REPO right now, if the last launch recorded one for it.
+launched_engine_for() {
+  local repo="$1" m e
+  [[ -f "$CONFIG_SNAPSHOT_FILE" ]] || return 0
+  m="$(sed -n 's/^MODEL=//p' "$CONFIG_SNAPSHOT_FILE" 2>/dev/null | head -1)"
+  e="$(sed -n 's/^ENGINE=//p' "$CONFIG_SNAPSHOT_FILE" 2>/dev/null | head -1)"
+  [[ -n "$e" && "$m" == "$repo" ]] && printf '%s\n' "$e"
+  return 0
 }
 
 diff_config_snapshot() {
@@ -2107,9 +2254,12 @@ write_dashboard_payload() {
   [[ -n "$eng" ]] || eng="gguf"
   dir="$MODELS_DIR/${repo//\//--}"
   load_engine "$eng" >/dev/null 2>&1 || true
-
   STATUS_MAIN=""; STATUS_WEIGHTS_GB=0; STATUS_VISION_GB=0
+  # Weights facts come from the engine that owns the files; the label comes
+  # from the one actually serving them (Splash serves another engine's files).
   engine_status_extras "$dir" 2>/dev/null || true
+  local served; served="$(launched_engine_for "$repo")"
+  [[ -n "$served" ]] && eng="$served"
 
   out="${DASH_CFG_FILE:-$RUN_DIR/dashboard-cfg.json}"
   mkdir -p "$(dirname "$out")"

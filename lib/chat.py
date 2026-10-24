@@ -250,6 +250,10 @@ class Client:
             body["stream_options"] = {"include_usage": True}
         if "thinking" in self.caps:
             body["chat_template_kwargs"] = {"enable_thinking": self.thinking}
+            # Splash (and MTPLX) take thinking as an OpenAI reasoning_effort and
+            # pass it to the template themselves; llama.cpp ignores the field.
+            # Sent both ways so /thinking works on every engine.
+            body["reasoning_effort"] = "medium" if self.thinking else "none"
         return body
 
     def send(self, text, on_delta, on_wait=None):

@@ -256,6 +256,36 @@ download. M5 Pro, 8k prefix, 64k window, best of 2:
 +70% on code and −35% on the session; depth 3 is already the generic default.
 On the M1 16 GB, with the draft: 18.7 t/s decode and 177 t/s prefill.
 
+### Splash, the third engine (added 2026-10-25)
+
+[Splash](https://github.com/incoai/splash) (incoai, Apache-2.0, 1.4.0) is a
+runtime built for a few model families: DFlash2 drafts trained per family and
+Metal kernels for their exact shapes. It needs an M3 or newer and macOS 26.4+,
+and it serves the Qwen 3.8 27B and Qwen 3.6 35B-A3B - not Gemma, and not the
+Qwen 9B, whose architecture it refuses. It loads the same uncensored GGUFs the
+llama.cpp rows use, linked in place; the MLX packs here store FP16 norms,
+which it does not load.
+
+M5 Pro, 17k-token agent replay, best of 2 interleaved, 60 s apart, no errors:
+
+| | Splash | MTPLX 2.12.2 | llama.cpp b11541 |
+|---|---:|---:|---:|
+| Qwen 3.6 35B-A3B, plain-code decode | **238.9 t/s** | 100.6 t/s | 105.5 t/s |
+| 35B, whole session | **24.8 s** | 32.6 s | 46.7 s (router) |
+| 35B, cold TTFT | **5.8 s** | 7.5 s | 12.0 s |
+| 35B, four subagents | **3.6 s** | 3.7 s | 3.8 s |
+| Qwen 3.8 27B, plain-code decode | **69.4 t/s** | 34.7 t/s | 40.8 t/s |
+| 27B, whole session | **81.2 s** | 117.9 s | — |
+| 27B, cold TTFT | **27.9 s** | 53.4 s | — |
+| 27B, four subagents | 11.1 s | **6.0 s** | — |
+
+The MTPLX and llama.cpp columns are the earlier runs above: in the head-to-head
+attempt MTPLX refused its requests under memory pressure (`system_memory_short`
+with 52 GB wired) right after Splash runs, so those rows were not valid.
+
+`./start.sh` offers Splash (the default) or llama.cpp whenever both can serve
+the model; `--engine` skips the question and `SPLASH=off` turns it off.
+
 ## 4. Subagents and restarts: the prefix router
 
 On llama.cpp a prefix is reused only from the slot holding it. Hermes runs

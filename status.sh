@@ -57,6 +57,10 @@ STATUS_ALIAS="$(alias_for_repo "$STATUS_REPO")"
 STATUS_ENGINE="$(model_engine_for "${STATUS_ALIAS:-$STATUS_REPO}")"
 [[ -n "$STATUS_ENGINE" ]] || STATUS_ENGINE="$(engine_for_dir "$MODELS_DIR/${STATUS_REPO//\//--}")"
 [[ -n "$STATUS_ENGINE" ]] || STATUS_ENGINE="gguf"
+# A Splash-compatible model may be running on Splash rather than the engine
+# its alias names; the launch snapshot records which.
+_served="$(launched_engine_for "$STATUS_REPO")"
+[[ -n "$_served" ]] && STATUS_ENGINE="$_served"
 
 case "${1:-}" in
   -h|--help)
@@ -72,11 +76,12 @@ case "${1:-}" in
     # nothing live to change - write env.conf and say what applies it. MTPLX has
     # a settings endpoint, so there the change is immediate and the model stays
     # loaded. Same command, two honest behaviours.
-    if [[ "$STATUS_ENGINE" == "gguf" ]]; then
+    # Splash, like llama.cpp, takes its default reasoning effort at launch.
+    if [[ "$STATUS_ENGINE" == "gguf" || "$STATUS_ENGINE" == "splash" ]]; then
       if [[ -z "${2:-}" ]]; then
         log "  thinking: ${C_BOLD}${THINKING}${C_RESET}  ${C_DIM}(from env.conf)${C_RESET}"
         log "  levels: off | minimal | low | high"
-        log "  ${C_DIM}llama.cpp reads chat-template kwargs at launch, so a change needs ./restart.sh${C_RESET}"
+        log "  ${C_DIM}$( [[ "$STATUS_ENGINE" == "splash" ]] && echo Splash || echo llama.cpp ) reads it at launch, so a change needs ./restart.sh${C_RESET}"
         exit 0
       fi
       LEVEL="$2"

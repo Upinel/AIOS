@@ -97,11 +97,15 @@ def main():
 
     gguf = os.path.join(REPO, "lib", "engines", "gguf.sh")
     mlx = os.path.join(REPO, "lib", "engines", "mlx.sh")
-    g, m = defined_in(gguf), defined_in(mlx)
+    splash = os.path.join(REPO, "lib", "engines", "splash.sh")
+    g, m, sp = defined_in(gguf), defined_in(mlx), defined_in(splash)
 
     for fn in CONTRACT:
         check(f"gguf implements {fn}", fn in g, True)
         check(f"mlx implements {fn}", fn in m, True)
+        check(f"splash implements {fn}", fn in sp, True)
+    check("splash adds nothing outside the contract",
+          sorted(n for n in sp if n.startswith("engine_") and n not in CONTRACT), [])
 
     # Implementing something the contract does not name is how the two engines
     # drift: a caller cannot use it without branching on engine, so it should

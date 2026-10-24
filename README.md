@@ -15,7 +15,7 @@
 <p align="center">
   <b>A fast, private, uncensored AI agent server for your Mac.</b><br>
   One command to install. One command to serve. Your data never leaves your network.<br>
-  <sub>Apple Silicon · 16 GB and up · two engines: llama.cpp (GGUF) and MLX (MTPLX)</sub>
+  <sub>Apple Silicon · 16 GB and up · three engines: llama.cpp, MLX (MTPLX) and Splash</sub>
 </p>
 
 <p align="center">
@@ -55,7 +55,8 @@ this project supports:
 |---|---:|---:|
 | Writing code, small model (Gemma 4 E2B) | **123 tokens/s** | **42 tokens/s** |
 | Writing code, the default model (Gemma 4 26B) | **105 tokens/s** | — *(needs 32 GB)* |
-| Writing code, Qwen 3.6 35B (MLX) | **101 tokens/s** | — *(needs 32 GB)* |
+| Writing code, Qwen 3.6 35B (Splash) | **239 tokens/s** | — *(needs 32 GB, M3+)* |
+| Writing code, Qwen 3.8 27B (Splash) | **69 tokens/s** | — *(needs 32 GB, M3+)* |
 | Four subagents sharing one tool prompt | **2.3 s** *(was 35.6 s)* | **4.3 s** *(was 108.8 s)* |
 | First reply after a restart | **0.5 s** *(was 16.2 s)* | — |
 
@@ -76,6 +77,14 @@ git clone https://github.com/Upinel/UpinelAIOS && cd UpinelAIOS
 That is it. `./start.sh` prints the URL, the model name and an API key — paste
 those into your agent and you are done.
 
+**On an M3 or newer with 32 GB+**, add Splash once for the fastest Qwen models
+(it is optional; everything else works without it):
+
+```bash
+brew tap incoai/tap && brew install incoai/tap/splash
+./start.sh --model gguf-q-35ba3b     # asks Splash (default) or llama.cpp
+```
+
 ## Which model should I run?
 
 `./install.sh` chooses for you, but here is what it is thinking:
@@ -86,8 +95,9 @@ those into your agent and you are done.
 | | `gguf-g-12b` — Gemma 4 12B | the most capable model that fits 16 GB |
 | **24 GB** | `gguf-g-12b` with a long context | room for a 128k window |
 | **32 GB** | `gguf-g-26ba4b` — Gemma 4 26B *(the default)* | best all-rounder, with vision |
-| **32 GB+** | `mlx-q-35ba3b` — Qwen 3.6 35B | the fastest big model |
-| **64 GB** | any of the above, or `mlx-q-27b-4bit` — Qwen 3.8 27B | the 27B is the quality pick |
+| **32 GB+, M3 or newer** | `gguf-q-35ba3b` — Qwen 3.6 35B on Splash | the fastest model here: 239 tokens/s writing code |
+| **32 GB+, M1/M2** | `mlx-q-35ba3b` — Qwen 3.6 35B on MLX | the fastest big model on those chips |
+| **64 GB** | any of the above, or `gguf-q-27b` — Qwen 3.8 27B on Splash | the 27B is the quality pick; 69 tokens/s on Splash |
 
 On an **8 GB** Mac it still works with `gguf-g-e2b` and a small context — see
 [the deep dive](docs/DEEP-DIVE.md#requirements) — but 16 GB is what this is
@@ -178,11 +188,17 @@ configurations run interleaved, best of two rounds, on the pinned runtimes
 | Gemma 4 E2B `gguf-g-e2b` | llama.cpp | **123 t/s** | 2.8 s | **1.0 s** |
 | Gemma 4 E4B `gguf-g-e4b` | llama.cpp | **109 t/s** | 4.5 s | — |
 | Gemma 4 26B `gguf-g-26ba4b` *(default)* | llama.cpp | **105 t/s** | 11–12 s | **2.3 s** |
-| Qwen 3.6 35B `mlx-q-35ba3b` | MLX | **101 t/s** | **7.5 s** | 3.7 s |
+| **Qwen 3.6 35B `gguf-q-35ba3b`** | **Splash** | **239 t/s** | **5.8 s** | 3.6 s |
+| Qwen 3.6 35B `mlx-q-35ba3b` | MLX | 101 t/s | 7.5 s | 3.7 s |
 | Qwen 3.6 35B `gguf-q-35ba3b` | llama.cpp | 106 t/s | 12.0 s | 3.8 s |
 | Qwen 3.8 9B `mlx-q-9b` | MLX | 71 t/s | 8.7 s | — |
+| **Qwen 3.8 27B `gguf-q-27b`** | **Splash** | **69 t/s** | **27.9 s** | 11.1 s |
 | Qwen 3.8 27B `gguf-q-27b` | llama.cpp | 41 t/s | — | — |
 | Qwen 3.8 27B `mlx-q-27b-4bit` | MLX | 35 t/s | 53 s | 6.0 s |
+
+Splash runs on M3 and newer only, and serves the Qwen 3.8 27B and Qwen 3.6
+35B-A3B; Gemma and the Qwen 9B are not models it supports. Same uncensored
+GGUF files as the llama.cpp rows, linked in place.
 
 ### M1 · 8-core GPU · 16 GB
 
@@ -217,6 +233,10 @@ M5's Neural Accelerators show. On both, the biggest win for agents is the same:
 | Qwen 27B on llama.cpp, writing code (new DFlash2 drafter) | 10 t/s | **41 t/s** |
 | Gemma E4B writing code (new MTP draft model) | 64 t/s | **109 t/s** |
 | Gemma E4B whole agent session | 69.9 s | **45.7 s** |
+| Qwen 35B writing code (Splash instead of MTPLX) | 101 t/s | **239 t/s** |
+| Qwen 35B whole agent session (Splash) | 32.6 s | **24.8 s** |
+| Qwen 27B writing code (Splash instead of MTPLX) | 35 t/s | **69 t/s** |
+| Qwen 27B whole agent session (Splash) | 117.9 s | **81.2 s** |
 
 **On the M1 with 16 GB**
 
@@ -237,9 +257,11 @@ are in [docs/PERF-AGENTS.md](docs/PERF-AGENTS.md).
 
 You do not need to know any of this to use it. It is here for the curious.
 
-- **Two engines, chosen by the model.** Gemma runs on llama.cpp, most Qwen
-  models on Apple's MLX via MTPLX. Pick a model and the right engine comes
-  with it.
+- **Three engines, chosen by the model.** Gemma runs on llama.cpp, Qwen on
+  Apple's MLX via MTPLX — and on an M3 or newer, the Qwen 27B and 35B run on
+  [Splash](https://github.com/incoai/splash), a runtime built for those two
+  models, about twice as fast again. `./start.sh` offers Splash (the default)
+  or llama.cpp whenever both can serve the model.
 - **A second model guesses ahead.** A small *draft* model proposes the next few
   words and the main model checks them in one go — speculative decoding. The
   draft only proposes; the uncensored model decides every word, so answers do
@@ -298,6 +320,7 @@ Change it, then `./restart.sh`.
 | `KV_QUANT` | cache precision — `f16` is faster, `q8` is smaller | `f16` |
 | `MEMORY_LIMIT_GB` | how much memory the server may use | ¾ of your RAM |
 | `AGENT_ROUTER` | the tool-prompt cache for llama.cpp models | `auto` |
+| `SPLASH` | use Splash for the Qwen 27B / 35B on M3+ (`off` to never) | `auto` |
 | `HOST` / `PORT` | `0.0.0.0` shares on your network; `127.0.0.1` keeps it to this Mac | `0.0.0.0:8000` |
 
 ## Updating

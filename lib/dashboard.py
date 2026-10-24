@@ -579,6 +579,100 @@ class ServerSampler:
         return stats
 
 
+class SplashSampler(ServerSampler):
+    """
+    Splash (incoai/splash) telemetry, in the shape the panels already read.
+
+    /health    liveness (public, like llama.cpp's)
+    /status    the engine's own view: active requests with their phase and
+               prompt progress, decode throughput, Metal memory
+    /metrics   Prometheus text, parsed by the base class unchanged
+
+    Splash has no /props or /slots, so props() and slots() are built from
+    /status, and the per-request log line it writes is parsed for totals:
+        Done · input 4,298 · cached 3,872 · output 83 · ... · 124.5 tok/s
+    """
+
+    LOG_DONE = re.compile(r"Done · input ([\d,]+) · cached ([\d,]+) · output ([\d,]+)"
+                          r".*?([\d.]+) tok/s(?: · ([\d.]+) tok/cycle)?")
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._status = None
+
+    def health(self):
+        h = self._get("/health")
+        return h if isinstance(h, dict) and not h.get("error") else None
+
+    def status(self):
+        d = self._get("/status")
+        self._status = d if isinstance(d, dict) else None
+        return self._status
+
+    def props(self):
+        st = self.status() or {}
+        # loaded_model() walks model_path for the owner--name directory, which
+        # is the model directory UpinelAIOS launched from.
+        return {"model_path": os.path.join(self.model_dir or "", "model"),
+                "n_ctx": st.get("maximum_context_tokens"),
+                "engine": "splash"}
+
+    def slots(self):
+        st = self._status or self.status() or {}
+        out = []
+        for i, r in enumerate(st.get("active_requests") or []):
+            phase = r.get("phase") or ""
+            out.append({
+                "id": r.get("id", i),
+                "is_processing": phase in ("prefill", "decode", "waiting_prefix",
+                                           "waiting_mask", "waiting_resources"),
+                "n_prompt_tokens": r.get("prompt_tokens") or 0,
+                "n_prompt_tokens_processed": r.get("prompt_processed") or 0,
+                "n_prompt_tokens_cache": 0,
+                "speculative": True,
+            })
+        return out
+
+    def log_stats(self, cache):
+        if not self.log_file or not os.path.exists(self.log_file):
+            return None
+        try:
+            size = os.path.getsize(self.log_file)
+        except OSError:
+            return None
+        offset = cache.get("offset", 0)
+        if size < offset:
+            cache.clear()
+            offset = 0
+        stats = {k: cache.get(k, 0) for k in ("decode_tokens", "prompt_tokens", "requests")}
+        stats["last_rate"] = cache.get("last_rate")
+        stats["last_accept"] = cache.get("last_accept")
+        try:
+            with open(self.log_file, "r", errors="replace") as fh:
+                fh.seek(offset)
+                for line in fh:
+                    m = self.LOG_DONE.search(line)
+                    if not m:
+                        continue
+                    stats["prompt_tokens"] += int(m.group(1).replace(",", "")) \
+                        - int(m.group(2).replace(",", ""))
+                    stats["decode_tokens"] += int(m.group(3).replace(",", ""))
+                    stats["requests"] += 1
+                    stats["last_rate"] = float(m.group(4))
+                cache["offset"] = fh.tell()
+        except OSError:
+            return None
+        cache.update(stats)
+        return stats
+
+
+def make_sampler(cfg):
+    """The telemetry reader for whichever engine is serving."""
+    cls = SplashSampler if cfg.get("engine") == "splash" else ServerSampler
+    return cls(cfg["base"], cfg.get("api_key", ""), cfg.get("model_dir"),
+               cfg.get("pid_file"), port=cfg.get("port"), log_file=cfg.get("log_file"))
+
+
 # ── rendering ────────────────────────────────────────────────────────────────
 def bar(pct, width=16, warn=75, crit=90):
     """A horizontal meter. Returns text; caller adds colour."""
@@ -782,10 +876,7 @@ class Dashboard:
         self.cpu = CPUSampler()
         self.gpu = GPUSampler()
         self.power = PowerSampler() if args.power else None
-        self.server = ServerSampler(cfg["base"], cfg["api_key"],
-                                    cfg.get("model_dir"), cfg.get("pid_file"),
-                                    port=cfg.get("port"),
-                                    log_file=cfg.get("log_file"))
+        self.server = make_sampler(cfg)
         self.hist_cpu = deque(maxlen=80)
         self.hist_gpu = deque(maxlen=80)
         self.hist_tps = deque(maxlen=80)
@@ -845,10 +936,7 @@ class Dashboard:
             return False
 
         self.cfg = new
-        self.server = ServerSampler(
-            new["base"], new.get("api_key", ""), new.get("model_dir"),
-            new.get("pid_file"), port=new.get("port"),
-            log_file=new.get("log_file"))
+        self.server = make_sampler(new)
         # Anything derived from the previous model is now wrong.
         self._log_cache = {}
         self.log_totals = None
@@ -1631,7 +1719,7 @@ class Dashboard:
 def print_once(cfg, snap):
     s = snap
     eng = cfg.get("engine", "gguf")
-    eng_label = {"gguf": "llama.cpp", "mlx": "MLX / MTPLX"}.get(eng, eng)
+    eng_label = {"gguf": "llama.cpp", "mlx": "MLX / MTPLX", "splash": "Splash"}.get(eng, eng)
     print(f"\n{BOLD}UpinelAIOS{RESET} {DIM}- "
           f"One-Click AI Agent Server OS for Mac  ·  {eng_label}{RESET}\n")
 
@@ -1641,7 +1729,7 @@ def print_once(cfg, snap):
     print(f"{BOLD}Model{RESET}")
     line("name", cfg.get("model_repo", "?"))
     line("served as", cfg.get("served_name", "?"))
-    line("engine", {"gguf": "llama.cpp", "mlx": "MLX / MTPLX"}.get(cfg.get("engine", "gguf"), cfg.get("engine")))
+    line("engine", {"gguf": "llama.cpp", "mlx": "MLX / MTPLX", "splash": "Splash"}.get(cfg.get("engine", "gguf"), cfg.get("engine")))
     line("weights", cfg.get("main_gguf") or cfg.get("model_dir", "?"))
     line("vision", "on" if cfg.get("vision_gb") else "off")
 
